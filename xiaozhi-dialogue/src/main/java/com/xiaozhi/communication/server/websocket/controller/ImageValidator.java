@@ -1,4 +1,4 @@
-package com.xiaozhi.communication.controller;
+package com.xiaozhi.communication.server.websocket.controller;
 
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;

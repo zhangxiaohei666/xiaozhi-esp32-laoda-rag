@@ -46,6 +46,11 @@ export const CONNECTION_STATUS_KEYS = [
   'connected',
   'closed',
   'dropped',
+  /**
+   * 服务端主动结束会话（例如 exit_session：用户说了"拜拜"）。
+   * 与 closed 的区别：closed 是本端主动断开，sessionEnded 是对方关的，需要给用户提示并自动接回来。
+   */
+  'sessionEnded',
   'error',
   'timeout',
   'failed',
@@ -91,6 +96,13 @@ let reconnectAttempts = 0
 const maxReconnectAttempts = 5
 const reconnectDelay = 2000
 
+/**
+ * 本次连接是否由本端主动断开。
+ * 主动断开和服务端结束会话都是 wasClean 的干净关闭，只靠 event.wasClean 分不开：
+ * 前者该显示「已断开」，后者该提示「会话已结束」并自动重连。
+ */
+let closingByUser = false
+
 // 建连等待上限
 const CONNECT_TIMEOUT = 5000
 
@@ -127,9 +139,12 @@ let pendingEmotion: string | null = null
 type MessageHandler = (data: WebSocketMessage) => void
 type StatusChangeHandler = (status: ConnectionStatus) => void
 type BinaryHandler = (data: ArrayBuffer) => void
+/** 服务端主动结束会话时触发，供界面提示"会话已结束"并引导重连 */
+type SessionEndedHandler = () => void
 
 const messageHandlers: Set<MessageHandler> = new Set()
 const statusChangeCallbacks: Set<StatusChangeHandler> = new Set()
+const sessionEndedHandlers: Set<SessionEndedHandler> = new Set()
 let binaryHandler: BinaryHandler | null = null
 
 // =============================
@@ -276,6 +291,28 @@ export function unregisterStatusChangeCallback(callback: StatusChangeHandler): b
   return statusChangeCallbacks.delete(callback)
 }
 
+export function registerSessionEndedHandler(handler: SessionEndedHandler): boolean {
+  if (typeof handler === 'function') {
+    sessionEndedHandlers.add(handler)
+    return true
+  }
+  return false
+}
+
+export function unregisterSessionEndedHandler(handler: SessionEndedHandler): boolean {
+  return sessionEndedHandlers.delete(handler)
+}
+
+function notifySessionEnded(): void {
+  sessionEndedHandlers.forEach(callback => {
+    try {
+      callback()
+    } catch (error) {
+      log(`会话结束回调执行错误: ${error}`, 'error')
+    }
+  })
+}
+
 export function registerBinaryHandler(handler: BinaryHandler): void {
   binaryHandler = handler
   log('✅ 二进制消息处理函数已注册', 'info')
@@ -337,6 +374,8 @@ export async function connectToServer(config: WebSocketConfig): Promise<boolean>
 
   try {
     isConnecting = true
+    // 新一轮连接开始，清掉上一轮的主动断开标记
+    closingByUser = false
     connectionStatus.connectionStatus = 'connecting'
     connectionStatus.isConnected = false
 
@@ -407,9 +446,26 @@ export async function connectToServer(config: WebSocketConfig): Promise<boolean>
       connectionStatus.isConnected = false
       stopHeartbeat()
 
-      if (event.wasClean) {
+      if (closingByUser) {
+        // 本端主动断开（用户点了断开/切页）：只更新状态，不重连
+        closingByUser = false
         connectionStatus.connectionStatus = 'closed'
         log(`WebSocket连接已关闭: 代码=${event.code}, 原因=${event.reason}`, 'info')
+      } else if (event.wasClean) {
+        // 服务端主动结束会话，来源有两种：
+        //   ① 用户说了"拜拜/再见/goodbye"，后端 exit_session 说完告别语后关闭；
+        //   ② 静默超时，InactiveSessionChecker 发完告别语后关闭（默认 60 秒没活动）。
+        // 收尾被打断的一轮 + 明确提示用户发生了什么。
+        //
+        // ⚠️ 这里【绝对不要】自动重连：立刻重连会建出一个新会话，静默超时一到又被关，
+        // 形成「连上 → 60 秒后告别 → 关闭 → 重连」的死循环（2026-10-25 实测踩过：
+        // 日志里每 60 秒一轮"已经 60 秒没有有效活动"，聊天窗被"会话已结束"刷屏）。
+        // 而且重连本身是多余的——发消息 / 按住说话前都会走 ensureConnection()，
+        // 会自己把连接接回来，用户不会卡住。
+        connectionStatus.connectionStatus = 'sessionEnded'
+        log(`会话已被服务端结束: 代码=${event.code}, 原因=${event.reason}`, 'info')
+        finalizeInterruptedTurn()
+        notifySessionEnded()
       } else {
         connectionStatus.connectionStatus = 'dropped'
         log('WebSocket连接意外断开', 'error')
@@ -674,6 +730,22 @@ function stopTypewriter(): void {
 }
 
 /**
+ * 服务端把连接关掉时收尾这一轮：
+ * 1. 按 tts stop 处理音频流 —— 否则播放器会一直等下一帧，听起来像卡住；
+ * 2. **不打断打字机** —— 已经收到的句子照样显示完，用户能看到完整的告别语；
+ *    只有队列已经空了（没有待显示内容）才清掉当前消息。
+ */
+function finalizeInterruptedTurn(): void {
+  log('连接被服务端结束，收尾本轮音频与消息', 'warning')
+  ttsStateHandler?.('stop')
+
+  if (!isTyping && typewriterQueue.length === 0) {
+    currentAIMessage = null
+    pendingEmotion = null
+  }
+}
+
+/**
  * TTS 状态回调。音频流的开始/结束只由 tts 的 start/stop 表达，
  * 服务端不会下发空音频帧，注册方需据此复位缓冲与结束播放。
  */
@@ -883,6 +955,8 @@ export function disconnectFromServer(): boolean {
 
   try {
     if (webSocket.readyState === WebSocket.OPEN) {
+      // 标记为本端主动断开，onclose 里据此走"已断开"而不是"会话已结束"
+      closingByUser = true
       webSocket.close(1000, '用户主动断开')
     }
 

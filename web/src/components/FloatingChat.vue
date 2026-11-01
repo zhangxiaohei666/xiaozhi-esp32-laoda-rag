@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { MessageOutlined, SendOutlined, AudioOutlined, CloseOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { message as AMessage } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -9,6 +9,7 @@ import { useWebSocket } from '@/composables/useWebSocket'
 import { useScroll } from '@/composables/useScroll'
 import { queryRoles } from '@/services/role'
 import { updateDevice } from '@/services/device'
+import { addMessage } from '@/services/websocket'
 import { getRelativeTime } from '@/utils/date'
 import type { Role } from '@/types/role'
 import RobotAvatar from '@/components/RobotAvatar.vue'
@@ -25,9 +26,12 @@ const {
   messages: wsMessages,
   connect,
   disconnect,
+  reconnect,
   sendText,
   startRecording: wsStartRecording,
   stopRecording: wsStopRecording,
+  onSessionEnded,
+  offSessionEnded,
   clearAllMessages
 } = useWebSocket()
 
@@ -104,6 +108,29 @@ const handleRoleChange = async (roleId: number) => {
 
 // 组件挂载时获取角色列表
 void fetchRoles()
+
+/**
+ * 服务端主动结束会话（后端 SessionExitFunction：用户说了"拜拜/再见/走了/goodbye"）。
+ * 后端说完告别语就会关掉 WebSocket，以前前端只把状态改成"已断开"、什么都不提示，
+ * 表现为"说着说着就没反应、接着打字也发不出去"，看着像坏了。
+ * 这里明确告诉用户发生了什么，并在会话里留一条记录，而不是让消息凭空消失。
+ */
+const handleSessionEnded = () => {
+  AMessage.info({ content: t('chat.floating.sessionEndedNotice'), duration: 6 })
+  addMessage({ content: t('chat.floating.sessionEndedNotice'), type: 'system', isUser: false })
+}
+onSessionEnded(handleSessionEnded)
+onUnmounted(() => offSessionEnded(handleSessionEnded))
+
+// 状态栏上的"点击重连"：自动重连失败或用户不想等时手动接回来
+const handleManualReconnect = async () => {
+  const ok = await reconnect(wsConfig.value)
+  if (ok) {
+    AMessage.success(t('chat.floating.online'))
+  } else {
+    AMessage.error(t('chat.floating.connectFailed'))
+  }
+}
 
 // 监听消息变化并滚动到底部
 watch(() => wsMessages.length, () => {
@@ -284,6 +311,12 @@ const connectionStatusDot = computed(() => {
               <div class="header-status">
                 <span class="status-dot" :class="connectionStatusDot"></span>
                 {{ connectionStatusText }}
+                <!-- 断开/会话结束后给一个明确的重连入口，别让用户只能反复打字试探 -->
+                <a
+                  v-if="!isConnected && connectionStatus !== 'connecting'"
+                  class="reconnect-link"
+                  @click="handleManualReconnect"
+                >{{ t('chat.floating.reconnectNow') }}</a>
               </div>
             </div>
           </div>
@@ -492,6 +525,18 @@ const connectionStatusDot = computed(() => {
     font-size: 12px;
     opacity: 0.9;
     margin-top: 2px;
+
+    // 断开/会话结束后的手动重连入口
+    .reconnect-link {
+      color: #fff;
+      text-decoration: underline;
+      cursor: pointer;
+      opacity: 0.85;
+
+      &:hover {
+        opacity: 1;
+      }
+    }
 
     .status-dot {
       width: 6px;

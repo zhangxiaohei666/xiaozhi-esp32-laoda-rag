@@ -4,7 +4,8 @@ import type { PageQueryParams } from './api'
 export type { PromptTemplate } from './template'
 
 export type RoleModelType = 'llm' | 'agent'
-export type VoiceProvider = 'edge' | 'aliyun' | 'aliyun-nls' | 'volcengine' | 'xfyun' | 'minimax' | 'tencent' | 'sherpa-onnx'
+// gptsovits：自建音色（本机 GPT-SoVITS 服务），音色清单来自静态 JSON，ttsId 关联 sys_config 里 provider=gptsovits 的那条
+export type VoiceProvider = 'edge' | 'aliyun' | 'aliyun-nls' | 'volcengine' | 'xfyun' | 'minimax' | 'tencent' | 'sherpa-onnx' | 'gptsovits'
 
 // 语音性别
 export type VoiceGender = '' | 'male' | 'female'

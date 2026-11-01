@@ -16,6 +16,8 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ThreadFactory;
 
@@ -43,6 +45,12 @@ public class Conversation extends ConversationIdentifier {
             .renderer(StTemplateRenderer.builder().startDelimiterToken('$').endDelimiterToken('$').build())
             .resource(new ClassPathResource("/prompts/role_system_prompt.md", Conversation.class))
             .build();
+
+    /** 系统提示词里「当前日期」的格式（只到日，不含时分，保证一整天渲染一致） */
+    private static final DateTimeFormatter SYSTEM_DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.SIMPLIFIED_CHINESE);
+    private static final DateTimeFormatter SYSTEM_WEEKDAY_FORMATTER =
+            DateTimeFormatter.ofPattern("EEEE", Locale.SIMPLIFIED_CHINESE);
 
     /** 最后一条历史距今超过这个时长，视为上一段对话已经结束，建对话时先压缩一批 */
     private static final Duration STALE_HISTORY = Duration.ofHours(1);
@@ -169,8 +177,11 @@ public class Conversation extends ConversationIdentifier {
     }
 
     /**
-     * 角色系统提示词：角色设定、设备对话约束、位置。只放会话期内稳定的内容，System Prompt 会话内必须保持不变；
+     * 角色系统提示词：角色设定、设备对话约束、位置、当前日期。只放会话期内稳定的内容，System Prompt 会话内必须保持不变；
      * 逐条消息的元数据（时间戳、说话人、情绪）由 UserMessageAssembler 拼在每条 UserMessage 前缀里。
+     * <p>
+     * 「当前日期」只保留到日（不含时分），一整天内渲染结果完全相同，
+     * 因此不违背上面的「会话内必须保持不变」；跨零点仍开着的长会话最多变化一次，可以接受。
      */
     public SystemMessage roleSystemMessage(ConversationContext context) {
         String roleSection = StringUtils.hasText(roleDesc)
@@ -183,7 +194,31 @@ public class Conversation extends ConversationIdentifier {
         String text = ROLE_SYSTEM_PROMPT_TEMPLATE.render(Map.of(
                 "role_section", roleSection,
                 "location_line", locationLine));
-        return new SystemMessage(text.strip());
+        // 当前日期：只到「日」，一天内渲染结果完全一致（见方法注释）；需要时分或日期推算时由 get_current_datetime 工具提供
+        LocalDate today = DateUtils.today();
+        String dateLine = "当前日期：" + today.format(SYSTEM_DATE_FORMATTER)
+                + " " + SYSTEM_WEEKDAY_FORMATTER.format(today)
+                + "（" + describeZoneForPrompt() + "）。需要具体时间，或要推算其他日期"
+                + "（昨天、明天、下周、N 天后），调用 get_current_datetime 工具，不要凭对话历史猜测。";
+        return new SystemMessage(text.strip() + System.lineSeparator() + dateLine);
+    }
+
+    /**
+     * 把时区说成人话，例如「北京时间 UTC+08:00」；异常时退化为「本机时区」。
+     * <p>先看偏移量而非 zoneId：未设 user.timezone 的 JVM 上 systemDefault 是 GMT+08:00，
+     * 只按 id 匹配会拼出重复文本。
+     */
+    private static String describeZoneForPrompt() {
+        try {
+            var offset = DateUtils.offset();
+            if (offset.getTotalSeconds() == 8 * 3600) {
+                return "北京时间 UTC+08:00";
+            }
+            var zoneId = DateUtils.zone();
+            return zoneId.getId() + " UTC" + offset.getId();
+        } catch (Exception e) {
+            return "本机时区";
+        }
     }
 
     /**

@@ -39,3 +39,50 @@ CLAUDE.md
 
 # Docker 本地配置，按 .env.example 复制生成
 .env
+
+# ---------- 以下是本项目（Windows + Eclipse 混用环境）补充的规则 ----------
+# 生成日期 2026-10-22
+
+# Eclipse / VS Code Java 插件产物
+.settings/
+.project
+.classpath
+.factorypath
+
+# 编译产物
+*.class
+
+# 本地备份与临时文件（例如改前端播放器时留的 audio.ts.bak-*）
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.temp
+
+# 本地数据库/缓存
+*.rdb
+*.sqlite
+*.db
+
+# 模型权重（体积大、可重下）
+*.ckpt
+*.pth
+*.onnx
+*.safetensors
+pretrained_models/
+
+# 本地私密配置
+secrets.*
+*.pem
+*.key
+*.p12
+*.jks
+application-local.yml
+application-local.yaml
+
+# 图书馆侧车的运行数据（cookie 含登录态，绝不能提交）
+data/
+logs/
+
+# study.md = 个人学习笔记，不属于项目代码
+study.md

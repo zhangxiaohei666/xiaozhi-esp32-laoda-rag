@@ -13,7 +13,13 @@ export default defineConfig(({ mode, command }) => {
 
   return {
     plugins: [
-      vue(),
+      vue({
+        // 测试模式关掉模板里的资源地址转换。开发/构建时它会把 <img src="/logo.png">
+        // 按 import.meta.url 解析成 file:///logo.png，而 Windows 上 file:/// 后面没有盘符，
+        // Node 读盘直接拒绝 → MainLayout.test.ts 整个文件加载失败、一个用例都跑不了。
+        // 测试里不需要真去加载图片，保持成普通字符串即可。
+        template: mode === 'test' ? { transformAssetUrls: false } : {},
+      }),
       vueDevTools(),
       // ant-design-vue 改按需引入：
       ...(mode === 'test'

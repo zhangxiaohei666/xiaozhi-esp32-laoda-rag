@@ -1,4 +1,4 @@
-package com.xiaozhi.communication.controller;
+package com.xiaozhi.communication.server.websocket.controller;
 
 import cn.dev33.satoken.annotation.SaIgnore;
 import com.xiaozhi.communication.auth.DeviceAuthService;

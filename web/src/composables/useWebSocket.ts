@@ -4,6 +4,7 @@ import { ref, onBeforeUnmount } from 'vue'
 import {
   connectToServer,
   disconnectFromServer,
+  reconnectToServer,
   sendTextMessage,
   startDirectRecording,
   stopDirectRecording,
@@ -15,6 +16,8 @@ import {
   registerBinaryHandler,
   unregisterBinaryHandler,
   registerTtsStateHandler,
+  registerSessionEndedHandler,
+  unregisterSessionEndedHandler,
   sendBinaryFrame,
   messages,
   clearMessages,
@@ -177,6 +180,23 @@ export function useWebSocket() {
     unregisterMessageHandler(handler)
   }
 
+  /**
+   * 服务端主动结束会话（用户说了"拜拜/再见/goodbye"）时通知。
+   * 与"连接意外断开"分开：这种情况要把提示明确告诉用户，而不是只让状态栏悄悄变一下。
+   */
+  const onSessionEnded = (handler: () => void): void => {
+    registerSessionEndedHandler(handler)
+  }
+
+  const offSessionEnded = (handler: () => void): void => {
+    unregisterSessionEndedHandler(handler)
+  }
+
+  // 手动重连（会话结束后状态栏上的"点击重连"）
+  const reconnect = async (config: WebSocketConfig): Promise<boolean> => {
+    return reconnectToServer(config)
+  }
+
   // 清空消息（连带停掉仍在缓冲/播放的音频）
   const clearAllMessages = (): boolean => {
     stopAudioPlayback()
@@ -195,12 +215,15 @@ export function useWebSocket() {
     // 方法
     connect,
     disconnect,
+    reconnect,
     sendText,
     startRecording,
     stopRecording,
     checkConnected,
     onMessage,
     offMessage,
+    onSessionEnded,
+    offSessionEnded,
     clearAllMessages
   }
 }

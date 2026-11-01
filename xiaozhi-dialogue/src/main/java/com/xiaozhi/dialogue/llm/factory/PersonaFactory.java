@@ -46,6 +46,10 @@ public class PersonaFactory {
     private ConfigService configService;
     @Resource
     private ChatModelFactory chatModelFactory;
+
+  /** RAG 检索（可能为 null：没启用时不注入，Persona 侧已做空判断） */
+    @Resource
+  private com.xiaozhi.ai.rag.RetrievalService retrievalService;
     @Resource
     private ToolRegistrationService toolRegistrationService;
     @Resource
@@ -121,6 +125,7 @@ public class PersonaFactory {
                 .conversation(conversation)
                 .sttService(sttService)
                 .sttHotwords(Hotword.parse(role.getSttHotwords()))
+.retrievalService(retrievalService)
                 .chatModel(chatModel)
                 .synthesizer(synthesizer)
                 .player(session.getPlayer())

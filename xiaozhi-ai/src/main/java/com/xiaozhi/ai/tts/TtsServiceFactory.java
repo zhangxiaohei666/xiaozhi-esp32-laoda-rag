@@ -114,6 +114,8 @@ public class TtsServiceFactory {
                     outputPath,
                     runtimePathConfig.resolveTtsModelsDir().toString()
             );
+            // 自建音色：本机 GPT-SoVITS api_v2（apiUrl 取自 sys_config，其余参数走环境变量）
+            case "gptsovits" -> new GptSoVitsTtsService(config, voiceName, pitch, speed, outputPath);
             default -> new EdgeTtsService(voiceName, pitch, speed, outputPath);
         };
         return ttsService;

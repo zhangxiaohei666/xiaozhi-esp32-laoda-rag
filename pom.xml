@@ -34,6 +34,10 @@
         <spring-data-bom.version>2024.1.2</spring-data-bom.version>
         <!-- Spring AI -->
         <spring-ai.version>1.1.4</spring-ai.version>
+        <!-- gRPC：io.qdrant:client 把 gRPC 声明成 runtime 作用域，编译期需要 grpc-api 的 ManagedChannel -->
+        <grpc.version>1.65.1</grpc.version>
+        <!-- Tika：文档解析（PDF/Word/HTML/MD/TXT），RAG 入库用 -->
+        <tika.version>2.9.4</tika.version>
         <!-- 第三方版本号 -->
         <lombok.version>1.18.42</lombok.version>
         <sa-token.version>1.39.0</sa-token.version>
@@ -48,7 +52,8 @@
         <hutool.version>5.8.21</hutool.version>
         <archunit.version>1.3.0</archunit.version>
         <!-- 音频/AI SDK -->
-        <edge-tts.version>1.3.3</edge-tts.version>
+        <!-- 2026-10-20 由 1.3.3 升到 1.3.4：1.3.3 调 Edge TTS 被微软 403（缺 Sec-MS-GEC 令牌），1.3.4 为修复版 -->
+        <edge-tts.version>1.3.4</edge-tts.version>
         <concentus.version>1.0.2</concentus.version>
         <vorbis.version>0.8</vorbis.version>
         <vosk.version>0.3.45</vosk.version>
@@ -93,6 +98,51 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- gRPC API 显式声明（qdrant 客户端标成 runtime，编译期要用其类型） -->
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-api</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+            <!-- Tika 文档解析：版本集中在此管理（仅定版本，不引入），子模块只声明 artifactId -->
+            <dependency>
+                <groupId>org.apache.tika</groupId>
+                <artifactId>tika-core</artifactId>
+                <version>${tika.version}</version>
+            </dependency>
+            <!--
+              按需引入，不用聚合包 tika-parsers-standard-package。
+
+              踩过的坑：一开始图省事用了聚合包，它通过传递依赖拉进来 18 个
+              tika-parser-*-module（音频视频、CAD、邮件、OCR、字体、安装包、网页归档……）
+              外加 POI 5.4.1 与 PDFBox 2.0.34，合计 25MB+；
+              而实际只解析 txt/md，走的是 TxtParser，属于 text-module。
+
+              `AutoDetectParser` 在 tika-core 里，靠 ServiceLoader 发现已引入的 parser，
+              所以**加新格式只要在下面加一行 artifact，业务代码一行都不用改**：
+                - PDF             → tika-parser-pdf-module
+                - Word/Excel/PPT  → tika-parser-microsoft-module（依赖 POI）
+                - HTML            → tika-parser-html-module
+            -->
+            <dependency>
+                <groupId>org.apache.tika</groupId>
+                <artifactId>tika-parser-text-module</artifactId>
+                <version>${tika.version}</version>
+            </dependency>
+            <!--
+              以下按需启用（当前不需要，保持注释以免误引重依赖）：
+
+              <dependency>
+                  <groupId>org.apache.tika</groupId>
+                  <artifactId>tika-parser-pdf-module</artifactId>
+                  <version>${tika.version}</version>
+              </dependency>
+              <dependency>
+                  <groupId>org.apache.tika</groupId>
+                  <artifactId>tika-parser-microsoft-module</artifactId>
+                  <version>${tika.version}</version>
+              </dependency>
+            -->
             <!-- 内部模块 -->
             <dependency>
                 <groupId>com.xiaozhi</groupId>
@@ -364,10 +414,13 @@
     </build>
 
     <repositories>
-        <!-- 项目内仓库：sherpa-onnx 未发布到 Maven Central，JAR 托管在项目 repo/ 目录 -->
+        <!--
+          项目内仓库：sherpa-onnx 未发布到 Maven Central，JAR 托管在项目 repo/ 目录。
+          子模块继承本节点后 project.basedir 指向各自模块目录，../repo 统一指回项目根的 repo/。
+        -->
         <repository>
             <id>project-local</id>
-            <url>file://${maven.multiModuleProjectDirectory}/repo</url>
+            <url>file://${project.basedir}/../repo</url>
         </repository>
         <repository>
             <id>aliyun</id>

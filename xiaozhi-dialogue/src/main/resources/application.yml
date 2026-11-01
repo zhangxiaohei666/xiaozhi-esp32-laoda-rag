@@ -31,3 +31,20 @@ spring:
 # ============================================================
 sa-token:
   jwt-secret-key: xiaozhi-esp32-server-java-jwt-secret-key
+
+# ============================================================
+# 图书馆座位查询工具（Function Calling）
+#
+# 默认关闭：enabled=false 时两个工具都不注册，模型不知道有这功能，
+# 对现有能力零影响。要用时把 LIBRARY_ENABLED 设成 true。
+#
+# 登录与 token 由独立的浏览器守护进程负责（见 scripts/library-sidecar），
+# 本进程只向它要 token，不碰 CAS 登录细节。
+# 所有地址都走环境变量 —— 本项目要迁服务器，代码里不留硬编码。
+# ============================================================
+library:
+  enabled: ${LIBRARY_ENABLED:false}
+  sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}
+  base-url: ${LIBRARY_BASE_URL:https://zwyy.nyist.edu.cn}
+  timeout-ms: ${LIBRARY_TIMEOUT_MS:5000}
+  token-timeout-ms: ${LIBRARY_TOKEN_TIMEOUT_MS:3000}

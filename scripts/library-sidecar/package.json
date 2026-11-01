@@ -1,0 +1,18 @@
+{
+  "name": "xiaozhi-library-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "图书馆座位系统的登录守护进程：只维护 token，不做业务查询",
+  "main": "library-sidecar.mjs",
+  "scripts": {
+    "start": "node library-sidecar.mjs",
+    "postinstall": "node -e \"console.log('提示：如果缺浏览器，执行 npx playwright install chromium')\""
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,5 +1,19 @@
 [
   {
+    "label": "牢大（云端复刻·我的音色）",
+    "value": "cosyvoice-v2:cosyvoice-v2-laoda-d21bc5a42cce4691b6dd81ecd6f74379",
+    "gender": "male",
+    "provider": "aliyun",
+    "model": "cosyvoice-v2"
+  },
+  {
+    "label": "雪峰老师",
+    "value": "cosyvoice-v3-flash:cosyvoice-v3-flash-xfv3f-eff35149e707414b9b0d360051a55471",
+    "gender": "male",
+    "provider": "aliyun",
+    "model": "cosyvoice-v3-flash"
+  },
+  {
     "label": "龙应催",
     "value": "longyingcui",
     "gender": "male",

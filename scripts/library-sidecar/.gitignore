@@ -1,0 +1,7 @@
+# 依赖与产物（node_modules 17.8 MB，绝不进仓库）
+node_modules/
+
+# 登录态（含 cookie，绝不能提交）
+data/
+.pending/
+*.log

@@ -184,3 +184,82 @@ describe('状态码不掺文案', () => {
     }
   })
 })
+
+describe('服务端主动结束会话', () => {
+  // 服务端结束会话有两个来源：用户说"拜拜"触发 exit_session，或静默超时
+  // （InactiveSessionChecker 默认 60 秒）发完告别语后关闭。
+  // 两种情况都必须让界面知道"是会话结束了"，而不是让状态悄悄变一下。
+  //
+  // ⚠️ 但【绝对不能】自动重连：立刻重连会建出新会话，静默超时一到又被关，
+  // 形成「连上 → 60 秒后告别 → 关闭 → 重连」的死循环（2026-10-25 实测踩过，
+  // 聊天窗被"会话已结束"刷屏）。用户不会因此卡住——发消息前会走 ensureConnection()。
+  it('干净关闭且非本端发起时，通知会话结束但【不自动重连】', async () => {
+    const ws = await loadModule()
+    const statuses: string[] = []
+    let endedCalls = 0
+    ws.registerStatusChangeCallback((status) => statuses.push(status.connectionStatus))
+    ws.registerSessionEndedHandler(() => {
+      endedCalls++
+    })
+
+    const pending = ws.connectToServer(config)
+    FakeWebSocket.last.emitOpen()
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(pending).resolves.toBe(true)
+
+    const connectionsBefore = FakeWebSocket.instances.length
+    statuses.length = 0
+    FakeWebSocket.last.emitClose(true)
+    // 给足重连窗口：如果这条路上还留着 scheduleReconnect，这里就会建出新连接
+    await vi.advanceTimersByTimeAsync(30000)
+
+    expect(endedCalls).toBe(1)
+    expect(statuses).toContain('sessionEnded')
+    expect(statuses).not.toContain('reconnecting')
+    expect(ws.getConnectionStatus().connectionStatus).toBe('sessionEnded')
+    // 最硬的证据：一条新连接都不许建
+    expect(FakeWebSocket.instances.length).toBe(connectionsBefore)
+  })
+
+  // 本端断开（用户点断开、切角色）不该提示"会话已结束"，也不该自动重连
+  it('本端主动断开时只置为 closed，不通知会话结束、不重连', async () => {
+    const ws = await loadModule()
+    let endedCalls = 0
+    ws.registerSessionEndedHandler(() => {
+      endedCalls++
+    })
+
+    const pending = ws.connectToServer(config)
+    FakeWebSocket.last.emitOpen()
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(pending).resolves.toBe(true)
+
+    ws.disconnectFromServer()
+    FakeWebSocket.last.emitClose(true)
+    await vi.advanceTimersByTimeAsync(10000)
+
+    expect(endedCalls).toBe(0)
+    expect(ws.getConnectionStatus().connectionStatus).toBe('closed')
+  })
+
+  // 退订要真的生效，否则组件反复挂载会攒下一串回调（每个都会弹一次提示）
+  it('退订后不再收到会话结束通知', async () => {
+    const ws = await loadModule()
+    let endedCalls = 0
+    const handler = () => {
+      endedCalls++
+    }
+    ws.registerSessionEndedHandler(handler)
+    ws.unregisterSessionEndedHandler(handler)
+
+    const pending = ws.connectToServer(config)
+    FakeWebSocket.last.emitOpen()
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(pending).resolves.toBe(true)
+
+    FakeWebSocket.last.emitClose(true)
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(endedCalls).toBe(0)
+  })
+})

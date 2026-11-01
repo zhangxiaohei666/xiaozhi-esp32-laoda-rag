@@ -1,0 +1,9 @@
+[
+  {
+    "label": "牢大（本地 GPT-SoVITS·科比音色）",
+    "value": "laoda",
+    "gender": "male",
+    "provider": "gptsovits",
+    "model": "GPT-SoVITS"
+  }
+]

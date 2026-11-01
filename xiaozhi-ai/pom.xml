@@ -34,6 +34,39 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-zhipuai</artifactId>
         </dependency>
+        <!-- Qdrant 向量库（RAG；方案 §8。提供 QdrantVectorStore + QdrantClient 类）
+             注意：必须用【非 starter】的核心模块。starter 会带进
+             spring-ai-autoconfigure-vector-store-qdrant，它强制要求容器里有 EmbeddingModel bean；
+             而本项目是按需从 sys_config 造模型（不用 Spring AI 自动配置），
+             用 starter 会导致启动直接失败：Consider defining a bean of type 'EmbeddingModel' -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-qdrant-store</artifactId>
+        </dependency>
+        <!--
+          Tika：文档解析 —— RAG 入库用（方案 §8.1）
+
+          这里只引 tika-core（AutoDetectParser 本体）+ text-module（txt/md/csv）。
+          不要再引 tika-parsers-standard-package：它会拖进 18 个 module、25MB+
+          依赖（音频视频、CAD、邮件、OCR、POI、PDFBox 等），而本项目只解析 txt/md。
+
+          将来要支持 PDF / Word，只在根 pom 的 dependencyManagement 里放开对应模块，
+          再到此处加一行 artifactId 即可，DocumentIngestService 不用改。
+        -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parser-text-module</artifactId>
+        </dependency>
+        <!-- gRPC API：io.qdrant:client 把 gRPC 全标成 runtime 作用域，
+             编译期解析 QdrantGrpcClient.newBuilder(...) 需要 io.grpc.ManagedChannel 这个类型 -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+        </dependency>
         <!-- MCP Client -->
         <dependency>
             <groupId>org.springframework.ai</groupId>

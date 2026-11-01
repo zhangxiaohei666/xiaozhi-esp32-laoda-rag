@@ -5,6 +5,8 @@ import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.communication.auth.DeviceAuthService;
 import com.xiaozhi.communication.common.ChatSession;
 import com.xiaozhi.communication.common.SessionManager;
+import com.xiaozhi.communication.server.websocket.controller.ImageValidator;
+import com.xiaozhi.communication.server.websocket.controller.VLChatController;
 import com.xiaozhi.support.ControllerTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

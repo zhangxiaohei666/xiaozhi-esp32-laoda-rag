@@ -48,6 +48,7 @@ import lombok.extern.slf4j.Slf4j;
     "com.xiaozhi.ai",
     // xiaozhi-server
     "com.xiaozhi.file",
+    "com.xiaozhi.knowledge",
     "com.xiaozhi.mcpserver",
     "com.xiaozhi.memory",
     "com.xiaozhi.music",
@@ -61,6 +62,7 @@ import lombok.extern.slf4j.Slf4j;
     "com.xiaozhi.authrole.dal.mysql.mapper",
     "com.xiaozhi.config.dal.mysql.mapper",
     "com.xiaozhi.device.dal.mysql.mapper",
+    "com.xiaozhi.knowledge.dal.mysql.mapper",
     "com.xiaozhi.mcptoolexclude.dal.mysql.mapper",
     "com.xiaozhi.message.dal.mysql.mapper",
     "com.xiaozhi.permission.dal.mysql.mapper",

@@ -21,6 +21,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -94,6 +95,12 @@ public class Persona {
     /** 角色配置的语音识别热词，解析好一次，每轮识别直接用 */
     @Getter
     private List<Hotword> sttHotwords;
+
+    /**
+     * RAG 检索服务（可为 null：未启用或没注入时，降级为"无参考资料"）。
+     * 只在 chatStream 里用来把命中资料拼进 system prompt。
+     */
+    private com.xiaozhi.ai.rag.RetrievalService retrievalService;
 
     /**
      * 与LLM Provider通信的具体实现类
@@ -201,7 +208,24 @@ public class Persona {
             ChatSession currentSession = getSession();
             String location = currentSession.getDevice() != null ? currentSession.getDevice().getLocation() : null;
             ConversationContext ctx = new ConversationContext(location);
-            List<Message> messages = conversation.messages(ctx);
+List<Message> messages = new ArrayList<>(conversation.messages(ctx));
+            // ★ RAG（docs/AI应用开发方案.md §8.3）：检索本会话自己的资料库，命中则插成 system 消息；
+            //   检索失败或无命中就完全跳过，绝不影响正常对话。
+            //   ⚠️ 必须带上 userId：检索只返回「本人的私有资料 + 所有人共享的资料」，
+            //      不带 userId 会退化成"只查共享"或更糟的"不过滤"（多用户串数据）。
+            try {
+                if (retrievalService != null) {
+                    String knowledge = retrievalService.buildContext(
+                            turn.userMessage.getText(), conversation.getUserId());
+                    if (knowledge != null && !knowledge.isBlank()) {
+                        messages.add(1, new SystemMessage("【参考资料】\n" + knowledge
+                                + "\n回答规则：优先使用【参考资料】里的内容回答；资料不够就直说没查到，不要编；"
+                                + "引用时带上资料标题（例如「根据《图书馆使用规则》…」）。"));
+                    }
+                }
+            } catch (Exception ragError) {
+                log.warn("RAG 注入失败，本轮按无参考资料处理: {}", ragError.getMessage());
+            }
             Prompt prompt = new Prompt(messages, chatOptions);
 
             Flux<ChatResponse> chatFlux = chatModel.stream(prompt)
@@ -237,7 +261,7 @@ public class Persona {
             if (!turn.phase.compareAndSet(Phase.GENERATING, Phase.COMPLETED)) {
                 return;
             }
-            DialogueContext.ToolCallSnapshot snapshot = getSession().getDialogueContext().snapshotToolCalls(turn.turnId);
+            DialogueContext.ToolCallSnapshot snapshot = snapshotToolCallsOrNull(turn);
             if (snapshot == null) {
                 return;
             }
@@ -281,10 +305,28 @@ public class Persona {
             if (!turn.phase.compareAndSet(Phase.GENERATING, Phase.CLOSED)) {
                 return;
             }
-            DialogueContext.ToolCallSnapshot snapshot = getSession().getDialogueContext().snapshotToolCalls(turn.turnId);
+            DialogueContext.ToolCallSnapshot snapshot = snapshotToolCallsOrNull(turn);
             DialogueTurn dialogueTurn = buildTurn(turn, null, null, snapshot, false);
             commitTurn(turn, dialogueTurn, snapshot != null ? snapshot.chains() : List.of());
         }
+    }
+
+    /**
+     * 取本轮的工具调用快照；会话已经结束就返回 null。
+     *
+     * <p>本轮 LLM 的回调（{@link #completeTurn} / {@link #failTurn}）可能在会话来已经关闭之后才执行
+     * —— 设备断开、{@code exit_session} 主动结束、客户端提前关闭都会走到这里。
+     * 原先直接写 {@code getSession().getDialogueContext()...}，会话没了就抛 NPE，
+     * 把这一轮的收尾整个丢掉（日志里表现为 {@code Persona.completeTurn} 的 NullPointerException）。
+     * 这里统一取一次并做空判断，调用方本来就已经处理了 snapshot == null 的情况。
+     */
+    private DialogueContext.ToolCallSnapshot snapshotToolCallsOrNull(Turn turn) {
+        ChatSession session = getSession();
+        if (session == null || session.getDialogueContext() == null) {
+            log.warn("会话已结束，跳过本轮工具调用快照 - turnId: {}", turn.turnId);
+            return null;
+        }
+        return session.getDialogueContext().snapshotToolCalls(turn.turnId);
     }
 
     private DialogueTurn buildTurn(Turn turn, AssistantMessage assistant, Usage usage,

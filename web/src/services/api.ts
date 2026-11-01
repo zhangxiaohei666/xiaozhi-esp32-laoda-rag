@@ -53,4 +53,12 @@ export default {
     stream: '/chat/stream',
     close: '/chat/close',
   },
+  // 知识库：两步式入库 —— 先 POST files 落盘拿 fileId，再 POST documents 解析入库
+  knowledge: {
+    files: '/knowledge/files',
+    documents: '/knowledge/documents',
+    stats: '/knowledge/stats',
+    categories: '/knowledge/categories',
+    search: '/knowledge/search',
+  },
 }

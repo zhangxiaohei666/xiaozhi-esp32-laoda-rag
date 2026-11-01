@@ -27,6 +27,9 @@ const VOICE_PROVIDERS: Record<VoiceProvider, { json?: string; label: string; col
   minimax: { json: '/static/assets/minimaxVoicesList.json', label: 'Minimax', color: 'red' },
   tencent: { json: '/static/assets/tencentVoicesList.json', label: '腾讯云', color: 'green' },
   'sherpa-onnx': { label: 'Sherpa-ONNX', color: 'purple' },
+  // 自建音色：本机 GPT-SoVITS（跨语言零样本克隆）。音色清单是静态 JSON，
+  // 只有 sys_config 里存在 provider=gptsovits 的配置时才会加载（loadAllVoices 里按配置筛）。
+  gptsovits: { json: '/static/assets/gptsovitsVoicesList.json', label: '牢大音色(GPT-SoVITS)', color: 'gold' },
 }
 
 /** 智能体提供商：只参与模型下拉的显示名 */

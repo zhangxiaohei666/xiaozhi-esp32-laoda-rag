@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # 公共函数库，被 server.ps1 / dialogue.ps1 / all.ps1 引用，不直接执行
 # Windows PowerShell 版本，与 _common.sh 功能对应
 # =============================================================================
@@ -240,8 +240,14 @@ function Start-XzService {
     # 在 $RootDir 启动，确保:
     #   1. Logback 配置中的 .\logs 写到 $RootDir\logs\
     #   2. application.yml 中 lib\, models\silero_vad.onnx 等相对路径解析正确
+    #
+    # JVM 时区显式钉成 $env:JAVA_TIMEZONE（默认 Asia/Shanghai）。
+    # 不显式指定时 Windows 上 ZoneId.systemDefault() 会解析成固定偏移的 "GMT+08:00"，
+    # 而 DateUtils.zone() 直接返回它，日志与工具输出里就会出现 "GMT+08:00" 这种非区域名。
+    # 偏移量不变（同为 +08:00），因此不影响已有 DATETIME 数据。
+    $tz = if ($env:JAVA_TIMEZONE) { $env:JAVA_TIMEZONE } else { 'Asia/Shanghai' }
     $proc = Start-Process -FilePath $javaBin `
-        -ArgumentList @("-Djava.library.path=$libPath", '-jar', $jar, "--spring.profiles.active=$SpringProfile") `
+        -ArgumentList @("-Duser.timezone=$tz", "-Djava.library.path=$libPath", '-jar', $jar, "--spring.profiles.active=$SpringProfile") `
         -WorkingDirectory $RootDir `
         -RedirectStandardOutput $outFile `
         -RedirectStandardError "$outFile.err" `

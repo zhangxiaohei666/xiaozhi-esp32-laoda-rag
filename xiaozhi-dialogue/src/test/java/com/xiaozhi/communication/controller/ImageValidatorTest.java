@@ -1,5 +1,6 @@
 package com.xiaozhi.communication.controller;
 
+import com.xiaozhi.communication.server.websocket.controller.ImageValidator;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 

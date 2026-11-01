@@ -50,6 +50,10 @@ interface StreamingContext {
   totalSamples: number
   lastPlayTime: number
   analyser: AnalyserNode | null
+  /** 下一段该在什么时刻起播（WebAudio 时间轴）。无缝播放靠它精确衔接，不再依赖 onended + setTimeout */
+  nextPlayTime: number
+  /** 整条流是否已经排出过第一段 —— 决定要不要做开头的淡入 */
+  started: boolean
   decodeOpusFrames: (opusFrames: Uint8Array[]) => Promise<void>
   startPlaying: () => void
 }
@@ -563,8 +567,10 @@ function addAudioToBuffer(opusData: Uint8Array): boolean {
   if (!isAudioPlaying && !isAudioBuffering) {
     startAudioBuffering()
   }
-  // 如果正在播放但当前没有播放片段，且有足够数据，触发解码
-  else if (isAudioPlaying && streamingContext && !streamingContext.playing && audioBufferQueue.length >= 3) {
+  // 播放中收到新数据：攒够 3 帧就立刻解码并排入播放时间轴
+  // （原来要求 !streamingContext.playing，而改成预排调度后 playing 在整条流期间都为 true，
+  //   那个条件会导致后续帧一直堆在缓冲里不被解码 → 播到一半就没声）
+  else if (isAudioPlaying && streamingContext && audioBufferQueue.length >= 3) {
     log('🔄 播放中收到新数据，立即解码', 'debug')
     const frames = [...audioBufferQueue]
     audioBufferQueue = []
@@ -650,6 +656,10 @@ async function playBufferedAudio(): Promise<boolean> {
         totalSamples: 0,
         lastPlayTime: 0,
         analyser: null,
+        // 无缝播放调度用：nextPlayTime 是"下一段该在什么时刻起播"，
+        // started 标记整条流是否已经排出过第一段（决定要不要做开头的淡入）
+        nextPlayTime: 0,
+        started: false,
 
         decodeOpusFrames: async function (opusFrames: Uint8Array[]) {
           if (!opusDecoder) {
@@ -674,8 +684,11 @@ async function playBufferedAudio(): Promise<boolean> {
             this.queuedSamples += decodedSamples
             this.totalSamples += decodedSamples
 
+            // 无缝调度：首段仍需一小段缓冲（避免一开口就欠载），之后只要队列里有样本就继续排
             const minSamples = defaultConfig.sampleRate * 0.1
-            if (!this.playing && this.queuedSamples >= minSamples) {
+            if (!this.started && this.queuedSamples >= minSamples) {
+              this.startPlaying()
+            } else if (this.started && this.queuedSamples > 0) {
               this.startPlaying()
             }
           } else {
@@ -684,109 +697,124 @@ async function playBufferedAudio(): Promise<boolean> {
         },
 
         startPlaying: function () {
-          if (this.playing || this.queuedSamples === 0 || !audioContext) return
+          if (!audioContext || this.queuedSamples === 0) return
 
           if (audioContext.state === 'suspended') {
             log('音频上下文仍处于暂停状态，无法播放', 'warning')
             return
           }
 
-          this.playing = true
-
-          const currentSamples = takeSamples(this, defaultConfig.sampleRate)
-          const audioBuffer = audioContext.createBuffer(
-            defaultConfig.channels,
-            currentSamples.length,
-            defaultConfig.sampleRate
-          )
-          audioBuffer.getChannelData(0).set(currentSamples)
-
-          this.source = audioContext.createBufferSource()
-          this.source.buffer = audioBuffer
-
-          const gainNode = audioContext.createGain()
-
-          const fadeDuration = 0.02
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime)
-          gainNode.gain.linearRampToValueAtTime(1, audioContext.currentTime + fadeDuration)
-
-          const duration = audioBuffer.duration
-          if (duration > fadeDuration * 2) {
-            gainNode.gain.setValueAtTime(1, audioContext.currentTime + duration - fadeDuration)
-            gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + duration)
+          // 预排时间轴：首段留 50ms 余量，之后严格接在上一段结束的时刻
+          // （原来靠 onended + setTimeout(10) 起播，每次拼接都会留一个真实空档）
+          if (this.nextPlayTime < audioContext.currentTime) {
+            this.nextPlayTime = audioContext.currentTime + (this.started ? 0 : 0.05)
           }
 
-          const analyserNode = audioContext.createAnalyser()
-          analyserNode.fftSize = 256
-          analyserNode.smoothingTimeConstant = 0.8
+          while (this.queuedSamples > 0) {
+            const currentSamples = takeSamples(this, defaultConfig.sampleRate)
+            if (currentSamples.length === 0) break
 
-          this.source.connect(analyserNode)
-          analyserNode.connect(gainNode)
-          gainNode.connect(audioContext.destination)
+            const audioBuffer = audioContext.createBuffer(
+              defaultConfig.channels,
+              currentSamples.length,
+              defaultConfig.sampleRate
+            )
+            audioBuffer.getChannelData(0).set(currentSamples)
 
-          this.analyser = analyserNode
+            const source = audioContext.createBufferSource()
+            source.buffer = audioBuffer
 
-          this.lastPlayTime = audioContext.currentTime
+            const gainNode = audioContext.createGain()
 
-          log(
-            `开始播放 ${currentSamples.length} 个样本，约 ${(currentSamples.length / defaultConfig.sampleRate).toFixed(2)} 秒`,
-            'debug'
-          )
+            // ★ 关键修复：只在整条流的【第一段】淡入、【最后一段】淡出。
+            //   原实现每段都做 20ms 淡出 —— 每 1 秒把音量拉到 0，听感就是"断断续续"。
+            const when = this.nextPlayTime
+            const duration = audioBuffer.duration
+            const fadeDuration = 0.01
+            const isFirst = !this.started
+            const isLast = this.endOfStream && this.queuedSamples === 0
 
-          this.source.onended = () => {
-            // 播完必须逐个 disconnect：只置 null 的话这三个节点还挂在音频图上，不会被回收
-            try {
-              this.source?.disconnect()
-              analyserNode.disconnect()
-              gainNode.disconnect()
-            } catch {
-              // 忽略重复断开
+            if (isFirst) {
+              gainNode.gain.setValueAtTime(0, when)
+              gainNode.gain.linearRampToValueAtTime(1, when + fadeDuration)
+            } else {
+              gainNode.gain.setValueAtTime(1, when)
             }
-            this.source = null
-            this.analyser = null
-            this.playing = false
+            if (isLast && duration > fadeDuration * 2) {
+              gainNode.gain.setValueAtTime(1, when + duration - fadeDuration)
+              gainNode.gain.linearRampToValueAtTime(0, when + duration)
+            }
 
-            // 继续播放队列中的数据
-            if (this.queuedSamples > 0) {
-              setTimeout(() => this.startPlaying(), 10)
+            const analyserNode = audioContext.createAnalyser()
+            analyserNode.fftSize = 256
+            analyserNode.smoothingTimeConstant = 0.8
+
+            source.connect(analyserNode)
+            analyserNode.connect(gainNode)
+            gainNode.connect(audioContext.destination)
+
+            this.analyser = analyserNode
+            this.lastPlayTime = when
+
+            source.onended = () => {
+              // 播完必须逐个 disconnect：只置 null 的话这几个节点还挂在音频图上，不会被回收
+              try {
+                source.disconnect()
+                analyserNode.disconnect()
+                gainNode.disconnect()
+              } catch {
+                // 忽略重复断开
+              }
+              if (this.source === source) {
+                this.source = null
+                this.analyser = null
+              }
             }
-            // 检查是否有新的缓冲数据
-            else if (audioBufferQueue.length > 0) {
-              const frames = [...audioBufferQueue]
-              audioBufferQueue = []
-              this.decodeOpusFrames(frames)
-            }
-            // 流已明确结束
-            else if (this.endOfStream) {
-              log('🏁 音频播放完成（流结束）', 'info')
-              isAudioPlaying = false
-              streamingContext = null
-              window.streamingContext = undefined
-            }
-            // 等待更多数据（不设置超时，持续等待）
-            else {
-              log('⏳ 等待更多音频数据...', 'debug')
-              // 不做任何处理，保持 isAudioPlaying = true
-              // 当新数据到达时，会通过 addAudioToBuffer 触发继续播放
-            }
+
+            source.start(when)
+
+            this.nextPlayTime += duration
+            this.started = true
+            this.playing = true
+            this.source = source
+
+            log(
+              `排入播放队列 ${currentSamples.length} 个样本，约 ${duration.toFixed(2)} 秒，起播于 +${(when - audioContext.currentTime).toFixed(3)}s`,
+              'debug'
+            )
           }
 
-          this.source.start()
+          // 流已结束且队列排空 → 等最后一段播完再复位（避免 isAudioPlaying 悬挂为 true）
+          if (this.endOfStream && this.queuedSamples === 0 && audioContext) {
+            const remainMs = Math.max((this.nextPlayTime - audioContext.currentTime) * 1000, 0)
+            setTimeout(() => {
+              if (this.queuedSamples === 0 && this.endOfStream) {
+                log('🏁 音频播放完成（流结束）', 'info')
+                isAudioPlaying = false
+                streamingContext = null
+                window.streamingContext = undefined
+              }
+            }, remainMs + 120)
+          }
         }
       }
 
-      window.streamingContext = streamingContext
+      window.streamingContext = streamingContext ?? undefined
     }
 
+    // 上面已确保非空；取局部引用是因为下面的闭包里有 streamingContext = null 的赋值，
+    // 会让 TS 对这个外层变量的收窄失效
+    const ctx: StreamingContext = streamingContext
+
     if (pendingStreamEnd) {
-      streamingContext.endOfStream = true
+      ctx.endOfStream = true
       pendingStreamEnd = false
     }
 
     const frames = [...audioBufferQueue]
     audioBufferQueue = []
 
-    await streamingContext.decodeOpusFrames(frames)
+    await ctx.decodeOpusFrames(frames)
     return true
   } catch (error) {
     log(`播放已缓冲的音频出错:` + error, 'error')

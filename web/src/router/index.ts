@@ -174,6 +174,18 @@ const routes: RouteRecordRaw[] = [
           permission: 'system:chat',
         },
       },
+      // 知识库（RAG）：文档上传、列表、删除
+      {
+        path: 'knowledge',
+        name: 'knowledge',
+        component: () => import('../views/KnowledgeView.vue'),
+        meta: {
+          title: 'router.title.knowledge',
+          icon: 'FolderOpenOutlined',
+          requiresAuth: true,
+          permission: 'system:knowledge',
+        },
+      },
       {
         path: 'auth-role',
         name: 'auth-role',

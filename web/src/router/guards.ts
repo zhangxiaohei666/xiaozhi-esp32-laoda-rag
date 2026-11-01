@@ -105,8 +105,8 @@ export function setupRouterGuards(router: Router) {
     syncPermissions(userStore)
 
     if (to.path === ROUTES.LOGIN || to.path === '/') {
-      // 已登录还访问登录页/根路径，跳转到对应角色的默认落地页
-      next({ path: defaultRouteFor(userStore.isAdmin) })
+      // 已登录还访问登录页/根路径，跳到该账号确实有权限的落地页
+      next({ path: defaultRouteFor(userStore.isAdmin, userStore.hasPermission) })
       NProgress.done()
       return
     }

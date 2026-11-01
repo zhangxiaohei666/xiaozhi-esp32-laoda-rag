@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/store/user'
-import { defaultRouteFor } from '@/router/routes'
+import { defaultRouteFor, ROUTES } from '@/router/routes'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -13,7 +13,11 @@ function goBack() {
 }
 
 function goHome() {
-  router.replace(defaultRouteFor(userStore.isAdmin))
+  const target = defaultRouteFor(userStore.isAdmin, userStore.hasPermission)
+  // 一个页面都没权限时会算回 403，避免重复导航
+  if (target !== ROUTES.ERROR_404) {
+    router.replace(target)
+  }
 }
 </script>
 

@@ -66,7 +66,9 @@ export function useAuth() {
   // 计算登录后要落地的路径：把 query.redirect 交给全局唯一的权限判断（resolveAuthNavigation），
   // 没有 redirect、或 redirect 本就是默认页时直接用默认页，省一次路由解析
   const resolveLandingRoute = (isAdmin: boolean): string => {
-    const defaultRoute = defaultRouteFor(isAdmin)
+    // 带上 hasPermission：角色权限是数据，可能被后台改过，
+    // 不能假设"普通用户一定能进设备页"（否则角色少了 device 权限就落到 403）
+    const defaultRoute = defaultRouteFor(isAdmin, userStore.hasPermission)
     const redirect = router.currentRoute.value.query.redirect as string | undefined
 
     if (!redirect || redirect === defaultRoute) {

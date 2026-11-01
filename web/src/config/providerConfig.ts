@@ -1098,7 +1098,10 @@ export const configTypeMap: Record<string, ConfigTypeInfo> = {
       { label: 'VolcEngine (Doubao)', value: 'volcengine', key: '3' },
       { label: 'XunFei', value: 'xfyun', key: '4' },
       { label: 'MiniMax', value: 'minimax', key: '5' },
-      { label: 'Sherpa-ONNX', value: 'sherpa-onnx', key: '6' }
+      { label: 'Sherpa-ONNX', value: 'sherpa-onnx', key: '6' },
+      // 自建音色：本机跑的 GPT-SoVITS（api_v2，默认 127.0.0.1:9880）。
+      // 只需要 apiUrl 一个字段；参考音频、语言、后处理滤镜都在服务端用环境变量配置。
+      { label: 'GPT-SoVITS (自建音色)', value: 'gptsovits', key: '7' }
     ],
     typeFields: {
       tencent: [
@@ -1219,6 +1222,18 @@ export const configTypeMap: Record<string, ConfigTypeInfo> = {
         }
       ],
       'sherpa-onnx': [],
+      // 自建音色（GPT-SoVITS）：只要一个地址。参考音频/语言/采样步数/后处理滤镜
+      // 都在服务端由环境变量（GPTSOVITS_*）配置，界面上不暴露，避免误改。
+      gptsovits: [
+        {
+          name: 'apiUrl',
+          label: 'API URL',
+          required: true,
+          span: 24,
+          help: 'config.help.ttsApiUrl',
+          placeholder: 'http://127.0.0.1:9880'
+        }
+      ],
     }
   },
   oss: {

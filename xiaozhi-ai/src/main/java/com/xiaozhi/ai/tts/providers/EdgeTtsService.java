@@ -57,7 +57,8 @@ public class EdgeTtsService implements TtsService {
 
         String filename = new TTS(voiceObj, text)
                 .findHeadHook()
-                .isRateLimited(true)
+                // 2026-10-20：tts-edge-java 升到 1.3.4 后 isRateLimited(Boolean) 已被移除
+                // （该版本重写了 Sec-MS-GEC 令牌生成，用于修复微软侧的 403 拒绝）
                 .storage(outputPath)
                 .voicePitch(pitch)
                 .voiceRate(rate)
