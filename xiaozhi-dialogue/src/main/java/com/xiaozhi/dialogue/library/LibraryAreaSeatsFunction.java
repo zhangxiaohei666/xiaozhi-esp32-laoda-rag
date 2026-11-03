@@ -27,7 +27,7 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-@ConditionalOnProperty(name = "library.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "xiaozhi.library.enabled", havingValue = "true")
 public class LibraryAreaSeatsFunction implements ToolsGlobalRegistry.GlobalFunction {
 
     public static final String TOOL_NAME = "library_area_seats";

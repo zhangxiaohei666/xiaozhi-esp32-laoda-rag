@@ -5,17 +5,20 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * 图书馆座位功能配置。
+ * 图书馆座位功能配置（{@code xiaozhi.library.*}）。
  *
  * <p>所有环境差异都走这里，代码里不留任何硬编码地址/路径 —— 本项目最终要迁移到别的服务器，
  * 迁过去只需要改环境变量，不用改代码。
  *
- * <p>默认 <b>关闭</b>（{@code library.enabled=false}）：此时两个工具都不注册，
+ * <p>默认 <b>关闭</b>（{@code xiaozhi.library.enabled=false}）：此时两个工具都不注册，
  * 模型完全不知道有这功能，不影响任何现有能力。
+ *
+ * <p>⚠️ 前缀与其他扩展配置统一挂在 {@code xiaozhi} 下（早期是裸 {@code library}），
+ * 这样全部可配置项都能在同一份 yml 的 {@code xiaozhi:} 段落里找到。
  */
 @Data
 @Component
-@ConfigurationProperties(prefix = "library")
+@ConfigurationProperties(prefix = "xiaozhi.library")
 public class LibraryProperties {
 
     /** 总开关。false 时两个查询工具都不注册。 */

@@ -65,6 +65,9 @@ class ComponentScanCoverageArchTest {
             "com.xiaozhi.agent",
             "com.xiaozhi.authrole",
             "com.xiaozhi.authrolepermission",
+            // 知识库管理后台（文档入库、列表、删除、统计）只属于 server 进程。
+            // dialogue 需要的是 RAG 检索本身，那在 com.xiaozhi.ai.rag 里，已被扫描。
+            "com.xiaozhi.knowledge",
             "com.xiaozhi.operationlog",
             "com.xiaozhi.permission",
             "com.xiaozhi.security",

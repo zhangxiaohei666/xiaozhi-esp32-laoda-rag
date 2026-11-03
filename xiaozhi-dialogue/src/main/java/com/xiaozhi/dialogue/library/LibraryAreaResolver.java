@@ -1,5 +1,6 @@
 package com.xiaozhi.dialogue.library;
 
+import com.xiaozhi.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -195,17 +196,17 @@ public class LibraryAreaResolver {
 
     private Snapshot snapshot(String today) {
         Snapshot cached = snapshot;
-        if (cached != null && System.currentTimeMillis() - snapshotAt < CACHE_TTL_MS) {
+        if (cached != null && DateUtils.millis() - snapshotAt < CACHE_TTL_MS) {
             return cached;
         }
         synchronized (this) {
-            if (snapshot != null && System.currentTimeMillis() - snapshotAt < CACHE_TTL_MS) {
+            if (snapshot != null && DateUtils.millis() - snapshotAt < CACHE_TTL_MS) {
                 return snapshot;
             }
             LibraryApiClient.Overview ov = apiClient.pick(today);
             Snapshot fresh = new Snapshot(ov.storeys(), ov.areas());
             snapshot = fresh;
-            snapshotAt = System.currentTimeMillis();
+            snapshotAt = DateUtils.millis();
             log.debug("图书馆目录已刷新：{} 个楼层，{} 个区域", fresh.storeys().size(), fresh.areas().size());
             return fresh;
         }

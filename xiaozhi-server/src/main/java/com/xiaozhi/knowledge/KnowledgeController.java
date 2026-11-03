@@ -6,8 +6,15 @@ import com.xiaozhi.ai.rag.DocumentIngestService;
 import com.xiaozhi.ai.rag.QdrantRagService;
 import com.xiaozhi.ai.rag.RetrievalService;
 import com.xiaozhi.common.model.PageResult;
+import com.xiaozhi.common.model.bo.KnowledgeDocBO;
+import com.xiaozhi.common.model.resp.KnowledgeCreateResultResp;
+import com.xiaozhi.common.model.resp.KnowledgeDetailResp;
+import com.xiaozhi.common.model.resp.KnowledgeDocResp;
+import com.xiaozhi.common.model.resp.KnowledgePingResp;
+import com.xiaozhi.common.model.resp.KnowledgeSearchResp;
+import com.xiaozhi.common.model.resp.KnowledgeStatsResp;
 import com.xiaozhi.common.web.ApiResponse;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeDocDO;
+import com.xiaozhi.knowledge.convert.KnowledgeConvert;
 import com.xiaozhi.knowledge.service.KnowledgeAccessGuard;
 import com.xiaozhi.knowledge.service.KnowledgeDocService;
 import com.xiaozhi.server.web.BaseController;
@@ -26,6 +33,7 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -71,8 +79,12 @@ public class KnowledgeController extends BaseController {
     @Resource
     private KnowledgeIngestAppService knowledgeIngestAppService;
 
+    /** BO → Resp 转换：Controller 出参一律是 Resp，DO/BO 不出 web 层。 */
     @Resource
-    private com.xiaozhi.knowledge.service.KnowledgePendingFileStore knowledgePendingFileStore;
+    private KnowledgeConvert knowledgeConvert;
+
+    @Resource
+    private com.xiaozhi.knowledge.service.KnowledgePendingFiles knowledgePendingFiles;
 
     // ==================== 连通性自检 ====================
 
@@ -85,8 +97,8 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckLogin
     @Operation(summary = "RAG 连通性自检", description = "检查 Qdrant 是否可达、集合是否存在、embedding 配置是否就绪")
-    public ApiResponse<Map<String, Object>> ping() {
-        return ApiResponse.success(qdrantRagService.ping());
+    public ApiResponse<KnowledgePingResp> ping() {
+        return ApiResponse.success(toPingResp(qdrantRagService.ping()));
     }
 
     // ==================== 入库（两步式的第二步） ====================
@@ -105,9 +117,9 @@ public class KnowledgeController extends BaseController {
     @SaCheckPermission("system:knowledge:api:upload")
     @Operation(summary = "创建知识库文档",
             description = "传入第一步返回的 fileId。走权限校验后解析、切块、向量化并回写账本")
-    public ApiResponse<Map<String, Object>> createDocument(@RequestBody KnowledgeCreateReq req) {
+    public ApiResponse<KnowledgeCreateResultResp> createDocument(@RequestBody KnowledgeCreateReq req) {
         Integer userId = knowledgeAccessGuard.currentUserId();
-        return ApiResponse.success(knowledgeIngestAppService.create(req, userId));
+        return ApiResponse.success(toCreateResult(knowledgeIngestAppService.create(req, userId)));
     }
 
     // ==================== 查询 ====================
@@ -128,7 +140,7 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:list")
     @Operation(summary = "文档列表", description = "非管理员只返回自己的与共享的文档")
-    public ApiResponse<PageResult<KnowledgeDocDO>> listDocuments(
+    public ApiResponse<PageResult<KnowledgeDocResp>> listDocuments(
             @Parameter(description = "页码") @RequestParam(value = "pageNo", defaultValue = "1") int pageNo,
             @Parameter(description = "每页条数") @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
             @Parameter(description = "归类") @RequestParam(value = "category", required = false) String category,
@@ -140,7 +152,8 @@ public class KnowledgeController extends BaseController {
                 ? knowledgeAccessGuard.currentUserId() : null;
         return ApiResponse.success(knowledgeDocService.page(
                 Math.max(1, pageNo), Math.min(Math.max(1, pageSize), 200),
-                category, status, scope, keyword, ownerFilter));
+                category, status, scope, keyword, ownerFilter)
+                .map(knowledgeConvert::toResp));
     }
 
     /**
@@ -152,10 +165,10 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:detail")
     @Operation(summary = "文档详情", description = "含分块目录，不含分块正文")
-    public ApiResponse<Map<String, Object>> detailDocument(
+    public ApiResponse<KnowledgeDetailResp> detailDocument(
             @Parameter(description = "文档ID（账本自增主键）") @PathVariable("id") Long id) {
         Integer userId = knowledgeAccessGuard.currentUserId();
-        return ApiResponse.success(knowledgeIngestAppService.detail(id, userId));
+        return ApiResponse.success(knowledgeConvert.toResp(knowledgeIngestAppService.detail(id, userId)));
     }
 
     /** 统计：文档数、成功/失败/处理中、总块数、总字数。非管理员只统计自己有权限看的。 */
@@ -163,10 +176,10 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:stats")
     @Operation(summary = "知识库统计")
-    public ApiResponse<Map<String, Object>> stats() {
+    public ApiResponse<KnowledgeStatsResp> stats() {
         Integer ownerFilter = knowledgeAccessGuard.needOwnerFilter()
                 ? knowledgeAccessGuard.currentUserId() : null;
-        return ApiResponse.success(knowledgeDocService.stats(ownerFilter));
+        return ApiResponse.success(toStatsResp(knowledgeDocService.stats(ownerFilter)));
     }
 
     /** 已有的归类取值，供前端下拉。 */
@@ -212,15 +225,11 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:search")
     @Operation(summary = "检索调试", description = "直接查看 RAG 命中结果与相似度分数")
-    public ApiResponse<Map<String, Object>> search(
+    public ApiResponse<KnowledgeSearchResp> search(
             @Parameter(description = "问题文本") @RequestParam("q") String q) {
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("query", q);
-        data.put("topK", retrievalService.getTopK());
-        data.put("threshold", retrievalService.getThreshold());
         // 与对话链路用同一套过滤（user_id / scope），否则调试结果会误导
-        data.put("hits", retrievalService.searchForDebug(q, knowledgeAccessGuard.currentUserId()));
-        return ApiResponse.success(data);
+        return ApiResponse.success(toSearchResp(q,
+                retrievalService.searchForDebug(q, knowledgeAccessGuard.currentUserId())));
     }
 
     // ==================== 旧接口（保留兼容，已废弃） ====================
@@ -240,7 +249,7 @@ public class KnowledgeController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:upload")
     @Operation(summary = "【已废弃】一步式上传并入库", description = "请改用 /files + /documents 两步式")
-    public ApiResponse<Map<String, Object>> upload(
+    public ApiResponse<KnowledgeCreateResultResp> upload(
             @Parameter(description = "文档文件") @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
             @Parameter(description = "来源链接（可选）") @RequestParam(value = "url", required = false) String url)
             throws Exception {
@@ -254,17 +263,99 @@ public class KnowledgeController extends BaseController {
         }
 
         // ① 先落到 .pending（与两步式的第一步等价）
-        com.xiaozhi.knowledge.service.KnowledgePendingFileStore.PendingFile pending =
-                knowledgePendingFileStore.save(fileName, file.getBytes());
+        com.xiaozhi.knowledge.service.KnowledgePendingFiles.PendingFile pending =
+                knowledgePendingFiles.save(fileName, file.getBytes());
 
         // ② 走统一编排入库
         KnowledgeCreateReq req = new KnowledgeCreateReq();
         req.setFileId(pending.fileId());
-        req.setScope(KnowledgeDocDO.SCOPE_SHARED);
+        req.setScope(KnowledgeDocBO.SCOPE_SHARED);
         req.setUrl(url);
 
-        Map<String, Object> data = knowledgeIngestAppService.create(req, knowledgeAccessGuard.currentUserId());
-        data.put("deprecated", true);
-        return ApiResponse.success(data);
+        return ApiResponse.success(toCreateResult(
+                knowledgeIngestAppService.create(req, knowledgeAccessGuard.currentUserId())));
+    }
+
+    // ==================== Map → Resp 转换 ====================
+
+    /**
+     * 把入库编排返回的 Map 转成明确出参。
+     *
+     * <p>编排层用 Map 是因为它还要带出"临时算出来的 contentHash"这类非持久化字段；
+     * 到了 web 边界就换成 {@link KnowledgeCreateResultResp}，让前端能拿到哪些字段一目了然。
+     */
+    private static KnowledgeCreateResultResp toCreateResult(Map<String, Object> data) {
+        KnowledgeCreateResultResp resp = new KnowledgeCreateResultResp();
+        resp.setId(asLong(data.get("id")));
+        resp.setContentHash((String) data.get("contentHash"));
+        resp.setTitle((String) data.get("title"));
+        resp.setCharCount(asInt(data.get("charCount")));
+        resp.setChunkCount(asInt(data.get("chunkCount")));
+        resp.setScope((String) data.get("scope"));
+        resp.setStatus((String) data.get("status"));
+        return resp;
+    }
+
+    /** Map → 连通性自检出参。 */
+    private static KnowledgePingResp toPingResp(Map<String, Object> data) {
+        KnowledgePingResp resp = new KnowledgePingResp();
+        resp.setEnabled(asBool(data.get("enabled")));
+        resp.setQdrantAddress((String) data.get("qdrantAddress"));
+        resp.setCollection((String) data.get("collection"));
+        resp.setQdrantReachable(asBool(data.get("qdrantReachable")));
+        resp.setCollectionExists(asBool(data.get("collectionExists")));
+        resp.setPointsCount(asLong(data.get("pointsCount")));
+        resp.setVectorSize(asInt(data.get("vectorSize")));
+        resp.setNote((String) data.get("note"));
+        resp.setEmbeddingConfigured(asBool(data.get("embeddingConfigured")));
+        resp.setHint((String) data.get("hint"));
+        return resp;
+    }
+
+    /** Map → 统计出参。 */
+    private static KnowledgeStatsResp toStatsResp(Map<String, Object> data) {
+        KnowledgeStatsResp resp = new KnowledgeStatsResp();
+        resp.setDocCount(asInt(data.get("docCount")));
+        resp.setSuccessCount(asInt(data.get("successCount")));
+        resp.setFailedCount(asInt(data.get("failedCount")));
+        resp.setProcessingCount(asInt(data.get("processingCount")));
+        resp.setChunkCount(asInt(data.get("chunkCount")));
+        resp.setCharCount(asLong(data.get("charCount")));
+        return resp;
+    }
+
+    /** 检索结果 → 出参（把实际生效的 topK / 阈值一并带出，便于判断"为什么没命中"）。 */
+    private KnowledgeSearchResp toSearchResp(String query, List<Map<String, Object>> hits) {
+        KnowledgeSearchResp resp = new KnowledgeSearchResp();
+        resp.setQuery(query);
+        resp.setTopK(retrievalService.getTopK());
+        resp.setThreshold(retrievalService.getThreshold());
+        List<KnowledgeSearchResp.Hit> list = new java.util.ArrayList<>(hits == null ? 0 : hits.size());
+        if (hits != null) {
+            for (Map<String, Object> h : hits) {
+                KnowledgeSearchResp.Hit hit = new KnowledgeSearchResp.Hit();
+                hit.setScore(h.get("score") instanceof Number n ? n.doubleValue() : null);
+                hit.setTitle((String) h.get("title"));
+                hit.setHeading((String) h.get("heading"));
+                hit.setSource((String) h.get("source"));
+                hit.setDocId((String) h.get("docId"));
+                hit.setSnippet((String) h.get("snippet"));
+                list.add(hit);
+            }
+        }
+        resp.setHits(list);
+        return resp;
+    }
+
+    private static Boolean asBool(Object value) {
+        return value instanceof Boolean b ? b : null;
+    }
+
+    private static Long asLong(Object value) {
+        return value instanceof Number n ? n.longValue() : null;
+    }
+
+    private static Integer asInt(Object value) {
+        return value instanceof Number n ? n.intValue() : null;
     }
 }

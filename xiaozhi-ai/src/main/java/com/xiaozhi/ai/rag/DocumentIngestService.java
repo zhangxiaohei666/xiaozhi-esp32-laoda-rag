@@ -1,5 +1,6 @@
 package com.xiaozhi.ai.rag;
 
+import com.xiaozhi.common.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
@@ -12,7 +13,7 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.OffsetDateTime;
+import com.xiaozhi.utils.DateUtils;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -66,12 +67,41 @@ public class DocumentIngestService {
 
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
 
+    /**
+     * 详细追踪开关（读代码调试用）。
+     *
+     * <p>开启方式：环境变量 {@code KNOWLEDGE_DEBUG_TRACE=true}（或 application.yml 里同名配置）。
+     * 开启后会额外打印：
+     * <ul>
+     *   <li>Tika 解析出的原文前 300 字</li>
+     *   <li>每一块的序号 / 字数 / 标题路径</li>
+     *   <li>第一块的完整 payload（看清到底往向量库里存了什么）</li>
+     *   <li>每一批 embedding 的进度</li>
+     * </ul>
+     *
+     * <p>平时保持关闭：38 篇文档就 82 块，全打出来会刷屏。
+     */
+    private static volatile boolean traceEnabled = false;
+
     private final QdrantRagService ragService;
 
-    public DocumentIngestService(QdrantRagService ragService) {
+    public DocumentIngestService(QdrantRagService ragService, RagProperties properties) {
         this.ragService = ragService;
-        log.info("文档入库服务初始化: 切块目标 {} 字（硬上限 {}，硬切重叠 {}），embedding 每批 {} 条",
-                CHUNK_TARGET, CHUNK_HARD_MAX, OVERLAP, EMBED_BATCH_SIZE);
+        traceEnabled = properties.getKnowledge().isDebugTrace();
+        log.info("文档入库服务初始化: 切块目标 {} 字（硬上限 {}，硬切重叠 {}），embedding 每批 {} 条，详细追踪={}",
+                CHUNK_TARGET, CHUNK_HARD_MAX, OVERLAP, EMBED_BATCH_SIZE, traceEnabled ? "开" : "关");
+        if (traceEnabled) {
+            log.info("  ⚠️ xiaozhi.rag.knowledge.debug-trace=true：入库时会打印切块明细与 payload，仅用于调试，记得关掉");
+        }
+    }
+
+    /** 裁剪文本用于日志预览（避免刷屏）。 */
+    private static String preview(String text, int max) {
+        if (text == null) {
+            return "null";
+        }
+        String oneLine = text.replace("\n", "⏎");
+        return oneLine.length() <= max ? oneLine : oneLine.substring(0, max) + "…（共 " + text.length() + " 字）";
     }
 
     // ---------------------------------------------------------------- 记录类型
@@ -182,18 +212,32 @@ public class DocumentIngestService {
         if (text == null || text.isBlank()) {
             throw new IllegalStateException("解析后没有取到任何文本（可能是扫描版 PDF，需要 OCR 才能提取）");
         }
+        log.info("① 解析: {} 字节 → {} 字纯文本（Tika，{}）", content.length, text.length(), fileName);
+        if (traceEnabled) {
+            log.info("   [trace] 原文前 300 字: {}", preview(text, 300));
+        }
 
         // ② 切块
         List<Chunk> chunks = split(text);
         if (chunks.isEmpty()) {
             throw new IllegalStateException("切块结果为空");
         }
+        int totalChars = chunks.stream().mapToInt(c -> c.text().length()).sum();
+        log.info("② 切块: {} 字 → {} 块（平均 {} 字/块）",
+                text.length(), chunks.size(), chunks.isEmpty() ? 0 : totalChars / chunks.size());
+        if (traceEnabled) {
+            for (int i = 0; i < chunks.size(); i++) {
+                Chunk c = chunks.get(i);
+                log.info("   [trace] 块{}/{}: {} 字, heading=[{}], 开头: {}",
+                        i, chunks.size() - 1, c.text().length(), c.heading(), preview(c.text(), 60));
+            }
+        }
 
         // ③ 元信息
         int ownerId = opts.userId() == null ? 0 : opts.userId();
         String contentHash = opts.contentHash() != null ? opts.contentHash() : computeContentHash(content);
         String title = stripExtension(fileName);
-        String updatedAt = OffsetDateTime.now().toString();
+        String updatedAt = DateUtils.instant().toString();
         HeaderInfo header = parseHeader(text);
         String scope = blankTo(opts.scope(), "private");
         String category = blankTo(opts.category(), header.category());
@@ -237,13 +281,17 @@ public class DocumentIngestService {
         }
 
         // ⑦ 分批写入（阿里云 embedding 单次最多 10 条）
+        int batchCount = (documents.size() + EMBED_BATCH_SIZE - 1) / EMBED_BATCH_SIZE;
+        log.info("③ 向量化: {} 块 → 分 {} 批调 embedding（每批最多 {} 条）", documents.size(), batchCount, EMBED_BATCH_SIZE);
+        int batchNo = 0;
         for (int from = 0; from < documents.size(); from += EMBED_BATCH_SIZE) {
             int to = Math.min(documents.size(), from + EMBED_BATCH_SIZE);
+            batchNo++;
+            if (traceEnabled) {
+                log.info("   [trace] 第 {}/{} 批: 写入块 {}~{}", batchNo, batchCount, from, to - 1);
+            }
             ragService.vectorStore().add(documents.subList(from, to));
         }
-        log.info("文档入库完成: id={}, 文件={}, 原文 {} 字 → {} 块（每批 {} 条，共 {} 批）",
-                docId, fileName, text.length(), chunks.size(), EMBED_BATCH_SIZE,
-                (documents.size() + EMBED_BATCH_SIZE - 1) / EMBED_BATCH_SIZE);
 
         long points = 0L;
         try {
@@ -254,6 +302,8 @@ public class DocumentIngestService {
         } catch (Exception ignored) {
             // 统计失败不影响入库结果
         }
+        log.info("④ 入库完成: id={}, 文件={}, 原文 {} 字 → {} 块 → Qdrant（当前总点数 {}）",
+                docId, fileName, text.length(), chunks.size(), points);
         return new IngestResult(docId, contentHash, title, text.length(), chunks.size(),
                 chunks, storedPath, points);
     }
@@ -298,8 +348,10 @@ public class DocumentIngestService {
         StringBuilder buffer = new StringBuilder();
         List<String> headingStack = new ArrayList<>();
         String currentHeading = "";
+        int lineNo = 0;
 
         for (String rawLine : text.split("\n")) {
+            lineNo++;
             String line = rawLine.trim();
             if (line.isEmpty()) {
                 continue;
@@ -307,20 +359,36 @@ public class DocumentIngestService {
             Matcher matcher = HEADING.matcher(line);
             if (matcher.matches()) {
                 // 标题前先收一刀，保证上一段归属正确的标题
+                int before = out.size();
                 flush(out, buffer, currentHeading);
+                if (traceEnabled && out.size() > before) {
+                    log.info("   [trace] 行{}: 遇到标题「{}」→ 先切一刀（生成 {} 块）",
+                            lineNo, matcher.group(2).trim(), out.size() - before);
+                }
                 int level = matcher.group(1).length();
                 while (headingStack.size() >= level) {
                     headingStack.remove(headingStack.size() - 1);
                 }
                 headingStack.add(matcher.group(2).trim());
                 currentHeading = String.join(" > ", headingStack);
+                if (traceEnabled) {
+                    log.info("   [trace] 行{}: 章节路径更新为「{}」", lineNo, currentHeading);
+                }
                 // 标题文字本身不进正文，只作为 heading 前缀拼到每一块前面
                 continue;
             }
-            if (buffer.length() > 0 && buffer.length() + line.length() + 1 > CHUNK_TARGET) {
+            int bufLen = buffer.length();
+            if (bufLen > 0 && bufLen + line.length() + 1 > CHUNK_TARGET) {
+                if (traceEnabled) {
+                    log.info("   [trace] 行{}: 缓冲区 {} 字 + 本行 {} 字 + 换行 = {} > {} → 切块",
+                            lineNo, bufLen, line.length(), bufLen + line.length() + 1, CHUNK_TARGET);
+                }
                 flush(out, buffer, currentHeading);
             }
             buffer.append(line).append('\n');
+        }
+        if (traceEnabled && buffer.length() > 0) {
+            log.info("   [trace] 文末: 缓冲区还剩 {} 字 → 最后切一刀", buffer.length());
         }
         flush(out, buffer, currentHeading);
         return out;
@@ -338,6 +406,11 @@ public class DocumentIngestService {
         if (body.isEmpty()) {
             return;
         }
+        if (traceEnabled) {
+            log.info("   [trace]   └─ 落块: 正文 {} 字（加 heading 前缀后 {}, 循环次数 {}）",
+                    body.length(), heading.isEmpty() ? body.length() : body.length() + heading.length() + 1,
+                    (body.length() + CHUNK_HARD_MAX - 1) / CHUNK_HARD_MAX);
+        }
         for (int start = 0; start < body.length(); ) {
             int end = Math.min(body.length(), start + CHUNK_HARD_MAX);
             String piece = body.substring(start, end).trim();
@@ -349,6 +422,9 @@ public class DocumentIngestService {
                 break;
             }
             start = Math.max(start + 1, end - OVERLAP);
+            if (traceEnabled) {
+                log.info("   [trace]   └─ 超长段落硬切: 下一片从 {} 开始（回退 {} 字重叠）", start, OVERLAP);
+            }
         }
     }
 

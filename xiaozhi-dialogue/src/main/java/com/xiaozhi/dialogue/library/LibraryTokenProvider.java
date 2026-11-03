@@ -1,5 +1,6 @@
 package com.xiaozhi.dialogue.library;
 
+import com.xiaozhi.utils.DateUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -53,7 +54,7 @@ public class LibraryTokenProvider {
      * @throws LibraryUnavailableException 守护进程没起、未登录、或超时
      */
     public String token() {
-        long now = System.currentTimeMillis();
+        long now = DateUtils.millis();
         String cached = token;
         if (cached != null && tokenValidUntil > now) {
             return cached;
@@ -63,7 +64,7 @@ public class LibraryTokenProvider {
 
     private synchronized String refresh() {
         // 双检：并发的第二个线程可能已经刷新完了
-        long now = System.currentTimeMillis();
+        long now = DateUtils.millis();
         if (token != null && tokenValidUntil > now) {
             return token;
         }
@@ -101,7 +102,7 @@ public class LibraryTokenProvider {
             }
             long expAt = node.path("expiresAt").asLong(0L);
             // 留 2 分钟余量；expiresAt 缺失时保守按 5 分钟缓存
-            long validUntil = expAt > 0 ? expAt - 120_000L : System.currentTimeMillis() + 300_000L;
+            long validUntil = expAt > 0 ? expAt - 120_000L : DateUtils.millis() + 300_000L;
             token = t;
             tokenValidUntil = validUntil;
             return t;
@@ -115,7 +116,7 @@ public class LibraryTokenProvider {
 
     /** 供健康检查/调试用：当前是否持有可用 token（不会触发网络请求） */
     public boolean hasToken() {
-        return token != null && tokenValidUntil > System.currentTimeMillis();
+        return token != null && tokenValidUntil > DateUtils.millis();
     }
 
     private static String text(JsonNode node, String field) {

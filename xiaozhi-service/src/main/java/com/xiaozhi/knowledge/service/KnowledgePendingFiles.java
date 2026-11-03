@@ -1,7 +1,8 @@
 package com.xiaozhi.knowledge.service;
 
+import com.xiaozhi.common.config.RagProperties;
+import com.xiaozhi.common.config.RuntimePathConfig;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -50,7 +51,7 @@ import java.util.stream.Stream;
  */
 @Slf4j
 @Component
-public class KnowledgePendingFileStore {
+public class KnowledgePendingFiles {
 
     /** 允许的扩展名：只收纯文本与 Markdown，PDF/Word 的中文提取尚未验证，暂不开放 */
     public static final List<String> ALLOWED_EXTENSIONS = List.of("txt", "md", "markdown");
@@ -71,14 +72,27 @@ public class KnowledgePendingFileStore {
     private final Path root;
     private final Path pendingDir;
 
-    public KnowledgePendingFileStore(Environment env) {
-        this.root = Paths.get(env.getProperty("KNOWLEDGE_UPLOAD_DIR", "D:\\xiaozhi\\.run\\knowledge"));
+    public KnowledgePendingFiles(RuntimePathConfig runtimePath, RagProperties ragProperties) {
+        // 目录解析统一交给 RuntimePathConfig：
+        //   留空     → ${xiaozhi.runtime.data-dir}/knowledge（推荐，一处配置管全部落盘文件）
+        //   相对路径 → 相对 data-dir
+        //   绝对路径 → 原样使用
+        //
+        // ⚠️ 早期实现把 "D:\xiaozhi\.run\knowledge" 写成默认值。Windows 的反斜杠在 Linux 上是
+        //    合法文件名字符，Linux 上会创建出一个名为 `D:\xiaozhi\.run\knowledge` 的**单层目录**——
+        //    功能看着正常，数据却落到一个谁也不会去找的地方。
+        String configured = ragProperties.getKnowledge().getUploadDir();
+        this.root = (configured == null || configured.isBlank())
+                ? runtimePath.resolveStorageKey("knowledge")
+                : runtimePath.resolveStorageKey(configured);
         this.pendingDir = root.resolve(PENDING_DIR_NAME);
         try {
             Files.createDirectories(pendingDir);
         } catch (IOException e) {
             log.warn("创建待入库目录失败: {}", e.getMessage());
         }
+        log.info("知识库原文目录: {}（xiaozhi.rag.knowledge.upload-dir={}）",
+                root, (configured == null || configured.isBlank()) ? "留空 → data-dir/knowledge" : configured);
     }
 
     /** 第一步的产物 */

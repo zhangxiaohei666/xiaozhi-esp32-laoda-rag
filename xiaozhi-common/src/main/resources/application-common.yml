@@ -136,6 +136,42 @@ xiaozhi:
     segment-ms: 60000      # STT 单段时长，说到这里换一条识别流继续、各段文本拼接；要留在识别流 90 秒总时长之内
     max-speech-ms: 300000  # 一次说话的总天花板，到点强制收句并回答，之后的话丢弃到停顿为止
 
+  # ------------------------------------------------------------
+  # RAG 知识库
+  #
+  # 约定：这里只登记配置项与默认值，代码里不出现任何裸路径或内网地址。
+  # 换机器/换系统时只改环境变量，代码与配置文件都不用动。
+  # ------------------------------------------------------------
+  rag:
+    # 总开关。关掉后不建 Qdrant 客户端、检索直接返回空，对话链路完全不受影响。
+    enabled: ${RAG_ENABLED:true}
+
+    qdrant:
+      # 留空则用 localhost（Qdrant 与本进程同机，最常见）。
+      # Qdrant 装在别的机器（如虚拟机）时，必须显式配成本机可达的地址。
+      host: ${QDRANT_HOST:localhost}
+      # 6334 是 gRPC 端口（Spring AI 走这个）；6333 是 HTTP/控制台端口，别配错
+      port: ${QDRANT_PORT:6334}
+      collection: ${QDRANT_COLLECTION:xiaozhi_knowledge}
+
+    retrieval:
+      # 每次检索取多少条送进 prompt；段数越多上下文越全，但会稀释重点并占 token
+      top-k: ${RAG_TOP_K:5}
+      # 相似度阈值，低于它的命中会被丢掉，避免把"字面相似但无关"的资料喂给模型
+      similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.35}
+
+    knowledge:
+      # 知识库原文落盘目录。
+      #   留空 → 自动取 ${xiaozhi.runtime.data-dir}/knowledge（推荐，一处配置管全部文件）
+      #   相对路径 → 相对 data-dir
+      #   绝对路径 → 原样使用（想单独放一块磁盘时用）
+      # ⚠️ 不要再写死 Windows 盘符：Windows 的反斜杠在 Linux 上是合法文件名字符，
+      #    会把整个路径当成单个目录名创建出来。
+      upload-dir: ${KNOWLEDGE_UPLOAD_DIR:}
+      # 入库追踪日志：打印解析预览、每次切块的原因、每块字数、payload 示例。
+      # 只在读代码或排查入库问题时临时开启，平时保持 false 免得刷屏。
+      debug-trace: ${KNOWLEDGE_DEBUG_TRACE:false}
+
 # ============================================================
 # Sa-Token 认证框架配置（两边共用部分；jwt-secret-key 见各自 application.yml）
 # ============================================================

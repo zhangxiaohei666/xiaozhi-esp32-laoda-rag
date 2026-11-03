@@ -1,12 +1,12 @@
 package com.xiaozhi.ai.rag;
 
+import com.xiaozhi.common.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -32,9 +32,6 @@ import java.util.Map;
 @Component
 public class RetrievalService {
 
-    private static final int DEFAULT_TOP_K = 5;
-    private static final double DEFAULT_THRESHOLD = 0.35;
-
     /** payload 里的可见性字段值：所有人可见（与 sys_knowledge_doc.scope 保持一致） */
     private static final String SCOPE_SHARED = "shared";
 
@@ -42,27 +39,11 @@ public class RetrievalService {
     private final int topK;
     private final double threshold;
 
-    public RetrievalService(QdrantRagService ragService, Environment env) {
+    public RetrievalService(QdrantRagService ragService, RagProperties properties) {
         this.ragService = ragService;
-        this.topK = readInt(env.getProperty("RAG_TOP_K"), DEFAULT_TOP_K);
-        this.threshold = readDouble(env.getProperty("RAG_SIMILARITY_THRESHOLD"), DEFAULT_THRESHOLD);
-        log.info("RAG 检索配置: topK={}, 相似度阈值={}", topK, threshold);
-    }
-
-    private static int readInt(String value, int fallback) {
-        try {
-            return value == null || value.isBlank() ? fallback : Integer.parseInt(value.trim());
-        } catch (Exception e) {
-            return fallback;
-        }
-    }
-
-    private static double readDouble(String value, double fallback) {
-        try {
-            return value == null || value.isBlank() ? fallback : Double.parseDouble(value.trim());
-        } catch (Exception e) {
-            return fallback;
-        }
+        this.topK = properties.getRetrieval().getTopK();
+        this.threshold = properties.getRetrieval().getSimilarityThreshold();
+        log.info("RAG 检索配置: topK={}, 相似度阈值={}（来自 xiaozhi.rag.retrieval）", topK, threshold);
     }
 
     public int getTopK() {

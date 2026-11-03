@@ -4,14 +4,14 @@ import com.xiaozhi.ai.rag.DocumentIngestService;
 import com.xiaozhi.ai.rag.QdrantRagService;
 import com.xiaozhi.common.exception.OperationFailedException;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeChunkDO;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeDocDO;
+import com.xiaozhi.common.model.bo.KnowledgeChunkBO;
+import com.xiaozhi.common.model.bo.KnowledgeDetailBO;
+import com.xiaozhi.common.model.bo.KnowledgeDocBO;
 import com.xiaozhi.knowledge.service.KnowledgeAccessGuard;
 import com.xiaozhi.knowledge.service.KnowledgeDocService;
-import com.xiaozhi.knowledge.service.KnowledgePendingFileStore;
+import com.xiaozhi.knowledge.service.KnowledgePendingFiles;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -48,13 +48,19 @@ import java.util.Map;
  *       不会变成两条文档</li>
  *   <li>成功落盘路径以<b>相对路径</b>写进账本，换机器/换系统不用改数据</li>
  * </ul>
+ *
+ * <h3>2026-11-03 分层修正</h3>
+ * 本类<b>不再引用任何 DO</b>（{@code KnowledgeDocDO} / {@code KnowledgeChunkDO}），只与 BO 打交道。
+ * 持久化形状（表字段、自增策略）由 service 模块内部负责；
+ * 第三方 SDK（{@code org.springframework.ai.vectorstore}）也收进了 {@link QdrantRagService}。
+ * 这样本类只剩"编排"，不掺表结构与 SDK 细节。
  */
 @Slf4j
 @Service
 public class KnowledgeIngestAppService {
 
     @Resource
-    private KnowledgePendingFileStore pendingFileStore;
+    private KnowledgePendingFiles pendingFileStore;
 
     @Resource
     private DocumentIngestService documentIngestService;
@@ -79,11 +85,13 @@ public class KnowledgeIngestAppService {
         if (req == null || !StringUtils.hasText(req.getFileId())) {
             throw new IllegalArgumentException("缺少 fileId，请先调用 POST /api/knowledge/files 上传文件");
         }
-        String scope = StringUtils.hasText(req.getScope()) ? req.getScope().trim() : KnowledgeDocDO.SCOPE_PRIVATE;
+        String scope = StringUtils.hasText(req.getScope())
+                ? req.getScope().trim()
+                : KnowledgeDocBO.SCOPE_PRIVATE;
         // 第 3 层鉴权：非管理员不允许把资料设为共享
         knowledgeAccessGuard.assertCanCreateScope(scope);
 
-        KnowledgePendingFileStore.PendingFile pending = readPending(req.getFileId());
+        KnowledgePendingFiles.PendingFile pending = readPending(req.getFileId());
         byte[] content = readBytes(pending);
         String fileName = pending.fileName();
         int ownerId = userId == null ? 0 : userId;
@@ -107,7 +115,7 @@ public class KnowledgeIngestAppService {
         } catch (Exception e) {
             // 失败：记原因 + 补偿删 Qdrant 残留（幂等，失败也不掩盖原始错误）
             knowledgeDocService.markFailed(docId, e.getMessage());
-            compensateQdrant(docId);
+            qdrantRagService.deleteByDocId(docId);
             throw new OperationFailedException("入库失败：" + e.getMessage(), e);
         }
 
@@ -125,7 +133,7 @@ public class KnowledgeIngestAppService {
         data.put("charCount", result.charCount());
         data.put("chunkCount", result.chunkCount());
         data.put("scope", scope);
-        data.put("status", KnowledgeDocDO.STATUS_SUCCESS);
+        data.put("status", KnowledgeDocBO.STATUS_SUCCESS);
         return data;
     }
 
@@ -141,56 +149,51 @@ public class KnowledgeIngestAppService {
      */
     private Long resolveDocId(int ownerId, String contentHash, String fileName,
                               KnowledgeCreateReq req, String scope) {
-        KnowledgeDocDO existing = knowledgeDocService.findByOwnerAndHash(ownerId, contentHash);
+        KnowledgeDocBO existing = knowledgeDocService.findByOwnerAndHash(ownerId, contentHash);
         if (existing != null) {
-            KnowledgeDocDO update = new KnowledgeDocDO();
-            update.setId(existing.getId());
-            update.setTitle(stripExtension(fileName));
-            update.setCategory(StringUtils.hasText(req.getCategory()) ? req.getCategory().trim() : null);
-            update.setScope(scope);
-            update.setFileName(fileName);
-            update.setUrl(req.getUrl());
-            update.setPublishDate(parseDate(req.getPublishDate()));
-            knowledgeDocService.resetToProcessing(update);
+            knowledgeDocService.resetToProcessing(withMeta(existing.getId(), contentHash, ownerId,
+                    fileName, req, scope));
             return existing.getId();
         }
 
-        KnowledgeDocDO doc = new KnowledgeDocDO();
-        doc.setContentHash(contentHash);
-        doc.setHashVersion(KnowledgeDocDO.HASH_VERSION_CURRENT);
-        doc.setTitle(stripExtension(fileName));
-        doc.setCategory(StringUtils.hasText(req.getCategory()) ? req.getCategory().trim() : null);
-        doc.setScope(scope);
-        doc.setSourceType(KnowledgeDocDO.SOURCE_UPLOAD);
-        doc.setFileName(fileName);
-        doc.setUrl(req.getUrl());
-        doc.setPublishDate(parseDate(req.getPublishDate()));
-        doc.setCharCount(0);
-        doc.setChunkCount(0);
-        doc.setStatus(KnowledgeDocDO.STATUS_PROCESSING);
-        doc.setUserId(ownerId);
-
+        KnowledgeDocBO doc = withMeta(null, contentHash, ownerId, fileName, req, scope);
         try {
             knowledgeDocService.insertProcessing(doc);
             return doc.getId();
         } catch (DuplicateKeyException e) {
             // 并发：另一个请求刚插进去同一份内容 → 重查并复用
-            KnowledgeDocDO again = knowledgeDocService.findByOwnerAndHash(ownerId, contentHash);
+            KnowledgeDocBO again = knowledgeDocService.findByOwnerAndHash(ownerId, contentHash);
             if (again == null) {
                 throw new OperationFailedException("入库时发生并发冲突且无法定位已有记录，请重试", e);
             }
             log.info("并发重复上传，复用已有记录: id={}", again.getId());
-            KnowledgeDocDO update = new KnowledgeDocDO();
-            update.setId(again.getId());
-            update.setTitle(doc.getTitle());
-            update.setCategory(doc.getCategory());
-            update.setScope(doc.getScope());
-            update.setFileName(doc.getFileName());
-            update.setUrl(doc.getUrl());
-            update.setPublishDate(doc.getPublishDate());
-            knowledgeDocService.resetToProcessing(update);
+            knowledgeDocService.resetToProcessing(withMeta(again.getId(), contentHash, ownerId,
+                    fileName, req, scope));
             return again.getId();
         }
+    }
+
+    /**
+     * 组装「要落账的文档元信息」。
+     *
+     * <p>只填用户这次提交能决定的字段；status / 字数 / 块数这些由 service 层按流程自己维护，
+     * 编排层不去猜。
+     */
+    private static KnowledgeDocBO withMeta(Long id, String contentHash, int ownerId,
+                                           String fileName, KnowledgeCreateReq req, String scope) {
+        KnowledgeDocBO doc = new KnowledgeDocBO();
+        doc.setId(id);
+        doc.setContentHash(contentHash);
+        doc.setHashVersion(KnowledgeDocBO.HASH_VERSION_CURRENT);
+        doc.setTitle(stripExtension(fileName));
+        doc.setCategory(StringUtils.hasText(req.getCategory()) ? req.getCategory().trim() : null);
+        doc.setScope(scope);
+        doc.setSourceType(KnowledgeDocBO.SOURCE_UPLOAD);
+        doc.setFileName(fileName);
+        doc.setUrl(req.getUrl());
+        doc.setPublishDate(parseDate(req.getPublishDate()));
+        doc.setUserId(ownerId);
+        return doc;
     }
 
     /**
@@ -199,7 +202,7 @@ public class KnowledgeIngestAppService {
      * <p>三步都幂等，中途失败可以再点一次删除，不会残留半截状态。
      */
     public void delete(Long id, Integer userId) {
-        KnowledgeDocDO doc = knowledgeDocService.get(id);
+        KnowledgeDocBO doc = knowledgeDocService.get(id);
         if (doc == null) {
             throw new ResourceNotFoundException("文档不存在");
         }
@@ -207,7 +210,7 @@ public class KnowledgeIngestAppService {
         knowledgeAccessGuard.assertCanModify(doc, userId);
 
         // ② Qdrant（先做可重试的外部动作）
-        compensateQdrant(id);
+        qdrantRagService.deleteByDocId(id);
         // ③ 磁盘原文（文件不在也不算失败）
         deleteStoredFile(doc.getFilePath());
         // ④ 账本
@@ -216,19 +219,19 @@ public class KnowledgeIngestAppService {
     }
 
     /** 文档详情（含分块目录，不含正文）。 */
-    public Map<String, Object> detail(Long id, Integer userId) {
-        KnowledgeDocDO doc = knowledgeDocService.get(id);
+    public KnowledgeDetailBO detail(Long id, Integer userId) {
+        KnowledgeDocBO doc = knowledgeDocService.get(id);
         knowledgeAccessGuard.assertCanSee(doc, userId);
 
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("doc", doc);
-        data.put("chunks", knowledgeDocService.listChunks(id));
-        return data;
+        KnowledgeDetailBO detail = new KnowledgeDetailBO();
+        detail.setDoc(doc);
+        detail.setChunks(knowledgeDocService.listChunks(id));
+        return detail;
     }
 
     // ---------- 内部工具 ----------
 
-    private KnowledgePendingFileStore.PendingFile readPending(String fileId) {
+    private KnowledgePendingFiles.PendingFile readPending(String fileId) {
         try {
             return pendingFileStore.find(fileId);
         } catch (Exception e) {
@@ -236,28 +239,11 @@ public class KnowledgeIngestAppService {
         }
     }
 
-    private byte[] readBytes(KnowledgePendingFileStore.PendingFile pending) {
+    private byte[] readBytes(KnowledgePendingFiles.PendingFile pending) {
         try {
             return pendingFileStore.read(pending);
         } catch (Exception e) {
             throw new OperationFailedException("读取待入库文件失败：" + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * 按 id 删掉 Qdrant 里的向量。幂等；失败只记日志，不掩盖原始错误。
-     *
-     * <p>⚠️ Qdrant 里 {@code doc_id} 是 keyword 索引，过滤值必须是<b>字符串</b>。
-     */
-    private void compensateQdrant(Long docId) {
-        if (docId == null) {
-            return;
-        }
-        try {
-            qdrantRagService.vectorStore().delete(
-                    new FilterExpressionBuilder().eq("doc_id", String.valueOf(docId)).build());
-        } catch (Exception e) {
-            log.warn("清理 Qdrant 向量失败（id={}）: {}", docId, e.getMessage());
         }
     }
 
@@ -276,17 +262,16 @@ public class KnowledgeIngestAppService {
         }
     }
 
-    /** 由入库结果生成分块目录行（**不含正文**，正文只存在 Qdrant 与磁盘原文里）。 */
-    private List<KnowledgeChunkDO> buildChunkRows(DocumentIngestService.IngestResult result, Long docId) {
+    /** 由入库结果生成分块目录（**不含正文**，正文只存在 Qdrant 与磁盘原文里）。 */
+    private List<KnowledgeChunkBO> buildChunkRows(DocumentIngestService.IngestResult result, Long docId) {
         List<DocumentIngestService.Chunk> chunks = result.chunks();
-        List<KnowledgeChunkDO> rows = new ArrayList<>(chunks == null ? 0 : chunks.size());
+        List<KnowledgeChunkBO> rows = new ArrayList<>(chunks == null ? 0 : chunks.size());
         if (chunks == null) {
             return rows;
         }
         for (int i = 0; i < chunks.size(); i++) {
             DocumentIngestService.Chunk chunk = chunks.get(i);
-            KnowledgeChunkDO row = new KnowledgeChunkDO();
-            // 主键自增，由 Service 层统一置空后插入
+            KnowledgeChunkBO row = new KnowledgeChunkBO();
             row.setDocId(docId);
             row.setChunkIndex(i);
             // 标题路径与字数都取切块时的真实值，不填占位符

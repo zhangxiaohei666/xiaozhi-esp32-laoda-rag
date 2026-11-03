@@ -25,7 +25,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-@ConditionalOnProperty(name = "library.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "xiaozhi.library.enabled", havingValue = "true")
 public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFunction {
 
     public static final String TOOL_NAME = "library_seat_overview";

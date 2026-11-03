@@ -41,10 +41,14 @@ sa-token:
 # 登录与 token 由独立的浏览器守护进程负责（见 scripts/library-sidecar），
 # 本进程只向它要 token，不碰 CAS 登录细节。
 # 所有地址都走环境变量 —— 本项目要迁服务器，代码里不留硬编码。
+#
+# 注意前缀是 xiaozhi.library（与 application-common.yml 里其他扩展配置同属 xiaozhi 段），
+# 早期是裸 library，2026-11-03 统一。只有 dialogue 进程用到，所以留在这个文件里。
 # ============================================================
-library:
-  enabled: ${LIBRARY_ENABLED:false}
-  sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}
-  base-url: ${LIBRARY_BASE_URL:https://zwyy.nyist.edu.cn}
-  timeout-ms: ${LIBRARY_TIMEOUT_MS:5000}
-  token-timeout-ms: ${LIBRARY_TOKEN_TIMEOUT_MS:3000}
+xiaozhi:
+  library:
+    enabled: ${LIBRARY_ENABLED:false}
+    sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}
+    base-url: ${LIBRARY_BASE_URL:https://zwyy.nyist.edu.cn}
+    timeout-ms: ${LIBRARY_TIMEOUT_MS:5000}
+    token-timeout-ms: ${LIBRARY_TOKEN_TIMEOUT_MS:3000}

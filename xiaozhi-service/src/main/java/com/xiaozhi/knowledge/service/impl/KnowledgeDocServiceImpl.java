@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaozhi.common.model.PageResult;
+import com.xiaozhi.common.model.bo.KnowledgeChunkBO;
+import com.xiaozhi.common.model.bo.KnowledgeDocBO;
+import com.xiaozhi.knowledge.convert.KnowledgeConvert;
 import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeChunkDO;
 import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeDocDO;
 import com.xiaozhi.knowledge.dal.mysql.mapper.KnowledgeChunkMapper;
@@ -15,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +34,10 @@ import java.util.Map;
  *   <li>新增 {@link #findByOwnerAndHash} 与 {@link #resetToProcessing}，
  *       支持"同一内容重新入库时复用同一个 id"</li>
  * </ul>
+ *
+ * <p>2026-11-03 分层修正：本实现是 <b>DO 的边界</b> —— 入参出参全部用 BO，
+ * DO 只在本类内部出现。这样 server 层（Controller / AppService）看不到持久化形状，
+ * 满足架构测试 {@code serverModuleDoesNotDependOnDal}。
  */
 @Slf4j
 @Service
@@ -41,20 +49,24 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
     @Resource
     private KnowledgeChunkMapper chunkMapper;
 
+    /** DO ↔ BO 转换（MapStruct 生成实现）。 */
+    @Resource
+    private KnowledgeConvert knowledgeConvert;
+
     @Override
-    public void insertProcessing(KnowledgeDocDO doc) {
-        if (doc.getStatus() == null) {
-            doc.setStatus(KnowledgeDocDO.STATUS_PROCESSING);
+    public void insertProcessing(KnowledgeDocBO doc) {
+        KnowledgeDocDO row = toDO(doc);
+        if (row.getStatus() == null) {
+            row.setStatus(KnowledgeDocDO.STATUS_PROCESSING);
         }
-        if (doc.getHashVersion() == null) {
-            doc.setHashVersion(KnowledgeDocDO.HASH_VERSION_CURRENT);
+        if (row.getHashVersion() == null) {
+            row.setHashVersion(KnowledgeDocDO.HASH_VERSION_CURRENT);
         }
-        // 纯插入：自增主键会回填到 doc.id。
-        // 同一用户上传同一内容会命中 uk_owner_hash 抛 DuplicateKeyException，
-        // 调用方应捕获后改用 findByOwnerAndHash + resetToProcessing 的更新路径。
-        docMapper.insert(doc);
+        // 纯插入：自增主键会回填到 row.id，再写回 BO
+        docMapper.insert(row);
+        doc.setId(row.getId());
         log.info("知识库落账: id={}, 文件={}, hash={}, status={}",
-                doc.getId(), doc.getFileName(), brief(doc.getContentHash()), doc.getStatus());
+                row.getId(), row.getFileName(), brief(row.getContentHash()), row.getStatus());
     }
 
     @Override
@@ -82,7 +94,7 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
     }
 
     @Override
-    public void resetToProcessing(KnowledgeDocDO doc) {
+    public void resetToProcessing(KnowledgeDocBO doc) {
         if (doc == null || doc.getId() == null) {
             throw new IllegalArgumentException("resetToProcessing 需要带 id");
         }
@@ -105,50 +117,59 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void replaceChunks(Long docId, List<KnowledgeChunkDO> chunks) {
+    public void replaceChunks(Long docId, List<KnowledgeChunkBO> chunks) {
         chunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunkDO>().eq(KnowledgeChunkDO::getDocId, docId));
         if (chunks == null || chunks.isEmpty()) {
             return;
         }
-        for (KnowledgeChunkDO chunk : chunks) {
-            // 主键自增，这里显式置空，避免调用方误传
-            chunk.setId(null);
-            chunk.setDocId(docId);
-            chunkMapper.insert(chunk);
+        for (KnowledgeChunkBO chunk : chunks) {
+            KnowledgeChunkDO row = new KnowledgeChunkDO();
+            // 主键自增，显式置空避免调用方误传
+            row.setId(null);
+            row.setDocId(docId);
+            row.setChunkIndex(chunk.getChunkIndex());
+            row.setHeading(chunk.getHeading());
+            row.setCharCount(chunk.getCharCount());
+            chunkMapper.insert(row);
         }
     }
 
     @Override
-    public KnowledgeDocDO get(Long id) {
+    public KnowledgeDocBO get(Long id) {
         if (id == null) {
             return null;
         }
-        return docMapper.selectById(id);
+        return knowledgeConvert.toBO(docMapper.selectById(id));
     }
 
     @Override
-    public KnowledgeDocDO findByOwnerAndHash(Integer userId, String contentHash) {
+    public KnowledgeDocBO findByOwnerAndHash(Integer userId, String contentHash) {
         if (userId == null || !StringUtils.hasText(contentHash)) {
             return null;
         }
-        return docMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocDO>()
+        return knowledgeConvert.toBO(docMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocDO>()
                 .eq(KnowledgeDocDO::getUserId, userId)
                 .eq(KnowledgeDocDO::getContentHash, contentHash)
-                .last("LIMIT 1"));
+                .last("LIMIT 1")));
     }
 
     @Override
-    public List<KnowledgeChunkDO> listChunks(Long docId) {
+    public List<KnowledgeChunkBO> listChunks(Long docId) {
         if (docId == null) {
             return List.of();
         }
-        return chunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkDO>()
+        List<KnowledgeChunkDO> rows = chunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunkDO>()
                 .eq(KnowledgeChunkDO::getDocId, docId)
                 .orderByAsc(KnowledgeChunkDO::getChunkIndex));
+        List<KnowledgeChunkBO> result = new ArrayList<>(rows.size());
+        for (KnowledgeChunkDO row : rows) {
+            result.add(knowledgeConvert.toBO(row));
+        }
+        return result;
     }
 
     @Override
-    public PageResult<KnowledgeDocDO> page(int pageNo, int pageSize,
+    public PageResult<KnowledgeDocBO> page(int pageNo, int pageSize,
                                            String category, String status, String scope, String keyword,
                                            Integer ownerUserId) {
         LambdaQueryWrapper<KnowledgeDocDO> qw = new LambdaQueryWrapper<>();
@@ -173,7 +194,11 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
         qw.orderByDesc(KnowledgeDocDO::getCreateTime);
 
         IPage<KnowledgeDocDO> page = docMapper.selectPage(new Page<>(pageNo, pageSize), qw);
-        return new PageResult<>(page.getRecords(), page.getTotal(), pageNo, pageSize);
+        List<KnowledgeDocBO> bos = new ArrayList<>(page.getRecords().size());
+        for (KnowledgeDocDO row : page.getRecords()) {
+            bos.add(knowledgeConvert.toBO(row));
+        }
+        return new PageResult<>(bos, page.getTotal(), pageNo, pageSize);
     }
 
     @Override
@@ -234,6 +259,30 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
                 .distinct()
                 .sorted()
                 .toList();
+    }
+
+    // ---------------------------------------------------------------- 内部工具
+
+    /** BO → DO（只搬需要落库的字段；id 为空表示新增）。 */
+    private static KnowledgeDocDO toDO(KnowledgeDocBO bo) {
+        KnowledgeDocDO row = new KnowledgeDocDO();
+        row.setId(bo.getId());
+        row.setContentHash(bo.getContentHash());
+        row.setHashVersion(bo.getHashVersion());
+        row.setTitle(bo.getTitle());
+        row.setCategory(bo.getCategory());
+        row.setScope(bo.getScope());
+        row.setSourceType(bo.getSourceType());
+        row.setFileName(bo.getFileName());
+        row.setFilePath(bo.getFilePath());
+        row.setUrl(bo.getUrl());
+        row.setPublishDate(bo.getPublishDate());
+        row.setCharCount(bo.getCharCount() == null ? 0 : bo.getCharCount());
+        row.setChunkCount(bo.getChunkCount() == null ? 0 : bo.getChunkCount());
+        row.setStatus(bo.getStatus());
+        row.setErrorMsg(bo.getErrorMsg());
+        row.setUserId(bo.getUserId());
+        return row;
     }
 
     private static String truncate(String s, int max) {

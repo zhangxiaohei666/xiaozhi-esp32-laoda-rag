@@ -1,8 +1,9 @@
 package com.xiaozhi.knowledge;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import com.xiaozhi.common.model.resp.KnowledgeFileUploadResp;
 import com.xiaozhi.common.web.ApiResponse;
-import com.xiaozhi.knowledge.service.KnowledgePendingFileStore;
+import com.xiaozhi.knowledge.service.KnowledgePendingFiles;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -14,9 +15,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
  * 知识库 —— 第一步：**纯文件传输**。
@@ -45,7 +43,7 @@ import java.util.Map;
 public class KnowledgeFileController {
 
     @Resource
-    private KnowledgePendingFileStore pendingFileStore;
+    private KnowledgePendingFiles pendingFileStore;
 
     /**
      * 上传文件到待入库区。
@@ -58,24 +56,26 @@ public class KnowledgeFileController {
     @SaCheckLogin
     @Operation(summary = "上传文件到待入库区",
             description = "只落盘，不解析不入库。返回的 fileId 交给 POST /api/knowledge/documents 完成入库")
-    public ApiResponse<Map<String, Object>> uploadFile(
+    public ApiResponse<KnowledgeFileUploadResp> uploadFile(
             @Parameter(description = "文档文件（txt / md / markdown，≤ 20MB）")
-            @RequestParam("file") MultipartFile file) throws Exception {
+            @RequestParam("file") MultipartFile file
+
+    ) throws Exception {
 
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("文件为空");
         }
         String fileName = file.getOriginalFilename();
         // 扩展名与大小校验在 store 里统一做，避免本类与入库路径两处规则漂移
-        KnowledgePendingFileStore.PendingFile saved =
+        KnowledgePendingFiles.PendingFile saved =
                 pendingFileStore.save(fileName, file.getBytes());
 
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("fileId", saved.fileId());
-        data.put("fileName", saved.fileName());
-        data.put("size", saved.size());
-        data.put("extension", saved.extension());
-        data.put("next", "POST /api/knowledge/documents 传 fileId 完成入库");
-        return ApiResponse.success(data);
+        KnowledgeFileUploadResp resp = new KnowledgeFileUploadResp();
+        resp.setFileId(saved.fileId());
+        resp.setFileName(saved.fileName());
+        resp.setSize(saved.size());
+        resp.setExtension(saved.extension());
+        resp.setNext("POST /api/knowledge/documents 传 fileId 完成入库");
+        return ApiResponse.success(resp);
     }
 }

@@ -279,7 +279,7 @@ async function heartbeat() {
 
     loginRequired = true;
     log('❌ 心跳续期失败：CAS 会话可能已失效');
-    log('   若持续失败，请执行: pwsh -ExecutionPolicy Bypass -File D:\\xiaozhi\\.run\\start-library.ps1 relogin');
+    log('   若持续失败，请执行: start-library.ps1 relogin（在项目 .run 目录下）');
     await quickRetry();
   } catch (e) {
     log('心跳异常:', e.message);

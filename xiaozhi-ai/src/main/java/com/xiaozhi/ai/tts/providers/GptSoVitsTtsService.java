@@ -1,5 +1,6 @@
 package com.xiaozhi.ai.tts.providers;
 
+import com.xiaozhi.utils.DateUtils;
 import com.xiaozhi.ai.tts.TtsService;
 import com.xiaozhi.ai.tts.XiaozhiTtsOptions;
 import com.xiaozhi.ai.utils.HttpUtil;
@@ -321,12 +322,12 @@ public class GptSoVitsTtsService implements TtsService {
      */
     private void warmUp() {
         Thread t = new Thread(() -> {
-            long start = System.currentTimeMillis();
+            long start = DateUtils.millis();
             try {
                 Path tmp = Paths.get(outputPath, "gptsovits-warmup-" + UUID.randomUUID().toString().replace("-", "") + ".wav");
                 requestTts("你好", tmp);
                 deleteQuietly(tmp);
-                log.info("GPT-SoVITS 预热完成，耗时 {} ms", System.currentTimeMillis() - start);
+                log.info("GPT-SoVITS 预热完成，耗时 {} ms", DateUtils.millis() - start);
             } catch (Exception e) {
                 log.warn("GPT-SoVITS 预热失败（不影响使用，首句会慢一些）: {}", e.getMessage());
             }

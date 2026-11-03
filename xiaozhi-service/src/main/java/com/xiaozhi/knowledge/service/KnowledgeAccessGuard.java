@@ -3,7 +3,7 @@ package com.xiaozhi.knowledge.service;
 import cn.dev33.satoken.stp.StpUtil;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UnauthorizedException;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeDocDO;
+import com.xiaozhi.common.model.bo.KnowledgeDocBO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -45,7 +45,7 @@ public class KnowledgeAccessGuard {
      * <p>普通用户一旦能把私人文件设成 shared，等于自己把资料公开给所有人，属于越权，必须拦。
      */
     public void assertCanCreateScope(String scope) {
-        if (!KnowledgeDocDO.SCOPE_PRIVATE.equalsIgnoreCase(scope) && !isAdmin()) {
+        if (!KnowledgeDocBO.SCOPE_PRIVATE.equalsIgnoreCase(scope) && !isAdmin()) {
             throw new UnauthorizedException("只有管理员可以把资料设为共享");
         }
     }
@@ -56,11 +56,11 @@ public class KnowledgeAccessGuard {
      * <p>无权查看时抛 {@link ResourceNotFoundException} 而不是「无权」——
      * 返回 404 不会暴露「这个 docId 存在」这一信息。
      */
-    public void assertCanSee(KnowledgeDocDO doc, Integer userId) {
+    public void assertCanSee(KnowledgeDocBO doc, Integer userId) {
         if (doc == null) {
             throw new ResourceNotFoundException("文档不存在");
         }
-        if (KnowledgeDocDO.SCOPE_SHARED.equalsIgnoreCase(doc.getScope())) {
+        if (KnowledgeDocBO.SCOPE_SHARED.equalsIgnoreCase(doc.getScope())) {
             return;
         }
         if (userId != null && userId.equals(doc.getUserId())) {
@@ -72,7 +72,7 @@ public class KnowledgeAccessGuard {
     /**
      * 删除 / 重试 / 改归属等写操作：本人上传的，或管理员，才允许。
      */
-    public void assertCanModify(KnowledgeDocDO doc, Integer userId) {
+    public void assertCanModify(KnowledgeDocBO doc, Integer userId) {
         if (doc == null) {
             throw new ResourceNotFoundException("文档不存在");
         }

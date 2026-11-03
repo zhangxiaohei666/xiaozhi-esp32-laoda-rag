@@ -1,8 +1,8 @@
 package com.xiaozhi.knowledge.service;
 
 import com.xiaozhi.common.model.PageResult;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeChunkDO;
-import com.xiaozhi.knowledge.dal.mysql.dataobject.KnowledgeDocDO;
+import com.xiaozhi.common.model.bo.KnowledgeChunkBO;
+import com.xiaozhi.common.model.bo.KnowledgeDocBO;
 
 import java.util.List;
 import java.util.Map;
@@ -15,14 +15,14 @@ import java.util.Map;
  *
  * <p>职责边界：
  * <ul>
- *   <li>本接口：MySQL 增删改查（文档 + 分块目录）</li>
+ *   <li>本接口：MySQL 增删改查（文档 + 分块目录），<b>对外只交付 BO</b></li>
  *   <li>{@code KnowledgeIngestAppService}（server 模块）：把"落盘文件 → 解析向量化 → 回写账本"串起来</li>
  *   <li>{@code RetrievalService}：只查 Qdrant，不查本接口</li>
  * </ul>
  *
- * <p>2026-11-01 重构：主键从"内容哈希字符串"改为自增 BIGINT，
- * 内容哈希降级为 {@code contentHash} 字段（唯一索引用于去重）。
- * 所有方法签名里的 {@code String docId} 因此改为 {@code Long id}。
+ * <p>⚠️ <b>为什么返回值是 BO 而不是 DO</b>：项目分层规范要求 DO 只在 service 模块内流转。
+ * server 层拿到 DO 就等于绕开了 Service 与 Convert，表结构会直接泄到 web 层
+ * （架构测试 {@code ModuleBoundaryArchTest.serverModuleDoesNotDependOnDal} 会拦）。
  */
 public interface KnowledgeDocService {
 
@@ -34,7 +34,7 @@ public interface KnowledgeDocService {
      * @throws org.springframework.dao.DuplicateKeyException 同一用户上传同一内容时
      *         （命中 uk_owner_hash），调用方应转成"更新已有记录"
      */
-    void insertProcessing(KnowledgeDocDO doc);
+    void insertProcessing(KnowledgeDocBO doc);
 
     /** 入库成功：更新字数、块数、状态与原文路径。 */
     void markSuccess(Long id, int charCount, int chunkCount, String filePath);
@@ -50,13 +50,13 @@ public interface KnowledgeDocService {
      *
      * @param doc 必须带 {@code id}；其余字段（标题/归类/可见性/链接等）会一并更新
      */
-    void resetToProcessing(KnowledgeDocDO doc);
+    void resetToProcessing(KnowledgeDocBO doc);
 
     /** 全量替换某文档的分块目录（先删后插，幂等）。 */
-    void replaceChunks(Long docId, List<KnowledgeChunkDO> chunks);
+    void replaceChunks(Long docId, List<KnowledgeChunkBO> chunks);
 
     /** 按主键查；不存在时返回 null。 */
-    KnowledgeDocDO get(Long id);
+    KnowledgeDocBO get(Long id);
 
     /**
      * 按「所属用户 + 内容指纹」查，用于去重。
@@ -64,17 +64,17 @@ public interface KnowledgeDocService {
      * <p><b>跨环境同步/合并时必须用这个方法定位文档，不能用 id</b>：
      * id 只在单库内有效，contentHash 才是内容决定的稳定标识。
      */
-    KnowledgeDocDO findByOwnerAndHash(Integer userId, String contentHash);
+    KnowledgeDocBO findByOwnerAndHash(Integer userId, String contentHash);
 
     /** 分块目录，按 chunkIndex 升序（不含正文）。 */
-    List<KnowledgeChunkDO> listChunks(Long docId);
+    List<KnowledgeChunkBO> listChunks(Long docId);
 
     /**
      * 分页查询。
      *
      * @param ownerUserId 非空时按「自己的 或 共享的」过滤；为 null 表示不限（管理员）
      */
-    PageResult<KnowledgeDocDO> page(int pageNo, int pageSize,
+    PageResult<KnowledgeDocBO> page(int pageNo, int pageSize,
                                     String category, String status, String scope, String keyword,
                                     Integer ownerUserId);
 
