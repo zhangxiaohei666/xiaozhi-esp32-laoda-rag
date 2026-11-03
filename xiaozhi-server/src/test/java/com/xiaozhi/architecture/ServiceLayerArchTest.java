@@ -81,7 +81,9 @@ class ServiceLayerArchTest {
         // MCP 工具调用结果的结构由被调用的第三方工具自行定义，无法用固定 DTO 表达
         "com.xiaozhi.device.DeviceMcpController#callMcpTool",
         // 设备端 MCP 识图回调，响应结构随视觉模型返回内容变化，且是设备固件直接解析的协议负载
-        "com.xiaozhi.communication.controller.VLChatController#vlChat"
+        // 2026-11-03：该类已从 communication.controller 移到 communication.server.websocket.controller，
+        // 这里的路径必须同步，否则豁免失配、规则会误报"Controller 出参不是 Resp"
+        "com.xiaozhi.communication.server.websocket.controller.VLChatController#vlChat"
     );
 
     private static JavaClasses xiaozhiClasses;

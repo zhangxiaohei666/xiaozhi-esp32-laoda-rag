@@ -16,6 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.*;
 
+
 import lombok.extern.slf4j.Slf4j;
 /**
  * 视觉对话（MCP 识图接口）
@@ -89,7 +90,13 @@ public class VLChatController {
             return failure("视觉对话处理失败，请稍后重试");
         }
     }
-
+    /**
+     * 出参刻意用 Map 而不是固定 Resp 类。
+     *
+     * <p>这是设备固件直接解析的 MCP 协议负载，结构随视觉模型返回内容变化，
+     * 没有稳定的 DTO 可收口；项目已在
+     * {@code ServiceLayerArchTest.DYNAMIC_PAYLOAD_ALLOWLIST} 里逐个显式豁免。
+     */
     private Map<String, Object> success(String text) {
         return Map.of("success", true, "text", text);
     }
