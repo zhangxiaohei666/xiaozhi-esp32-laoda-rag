@@ -46,6 +46,12 @@ sa-token:
 # 早期是裸 library，2026-11-03 统一。只有 dialogue 进程用到，所以留在这个文件里。
 # ============================================================
 xiaozhi:
+  stt:
+    # dialogue 是真正接设备音频的进程，必须加载本地识别模型。
+    # 这一项**特意放在这里而不是 application-common.yml**：
+    # spring.config.import 导入的文档优先级高于导入它的文件，写在 common 里
+    # 会给 server 也塞成 true（2026-11-04 实测踩过）。
+    local-enabled: ${XIAOZHI_STT_LOCAL_ENABLED:true}
   library:
     enabled: ${LIBRARY_ENABLED:false}
     sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}

@@ -117,16 +117,19 @@ xiaozhi:
     sense-voice-model-dir: models/sense-voice
     tts-models-dir: models/tts
   stt:
-    # 是否加载本地语音识别模型（SenseVoice / Vosk）。
+    # 是否加载本地语音识别模型（SenseVoice / Vosk）—— 由各进程自己在 application.yml 里定义。
     #
-    # 为什么要这个开关：SttServiceFactory 是 xiaozhi-ai 的公共组件，server 和 dialogue
-    # 两个进程启动时都会 @PostConstruct 加载模型。但 server 是纯后台 API（管理界面、
-    # 知识库、OTA），不接设备音频，加载识别模型纯属浪费内存；更糟的是 Vosk 在 Windows
-    # 上独占打开模型文件 —— 先启动的 server 抢到锁，真正要用的 dialogue 反而拿不到，
-    # 表现为"设备说话没有任何识别"（2026-11-04 实测就是这个状态）。
+    # 为什么要分进程：
+    #   SttServiceFactory 是 xiaozhi-ai 的公共组件，server 和 dialogue 两个进程启动时
+    #   都会 @PostConstruct 加载模型。但 server 是纯后台 API（管理界面、知识库、OTA），
+    #   不接设备音频，加载识别模型纯属浪费内存；更糟的是 Vosk 在 Windows 上独占打开
+    #   模型文件 —— 先启动的 server 抢到锁，真正要用的 dialogue 反而拿不到，
+    #   表现为"设备说话没有任何识别"（2026-11-04 实测踩过）。
+    #   → server 的 application.yml 写 false，dialogue 的写 true。
     #
-    # 所以：server 设 false（省内存 + 不抢锁），dialogue 用默认 true。
-    local-enabled: ${XIAOZHI_STT_LOCAL_ENABLED:true}
+    # ⚠️ 这一项**故意不在 common 里给默认值**：spring.config.import 导入的文档
+    #    优先级高于导入它的文件，在这里写默认值会盖掉各进程自己的设置
+    #    （2026-11-04 实测：server 明明写了 false，日志里仍加载了 Vosk）。
   tts:
     sherpa:
       # 同时进行的本地合成数上限，0 表示按 CPU 核数自动推导（核数/4，最少 1）。
