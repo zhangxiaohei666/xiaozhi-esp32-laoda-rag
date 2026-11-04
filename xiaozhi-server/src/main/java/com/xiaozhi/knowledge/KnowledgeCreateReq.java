@@ -25,4 +25,12 @@ public class KnowledgeCreateReq {
 
     /** 发布日期 yyyy-MM-dd，可空；空则用文件头部解析出的「发布日期」 */
     private String publishDate;
+
+    /**
+     * 来源：upload（用户上传，默认）/ scrape（网页抓取）/ import（批量导入）。
+     *
+     * <p>不传就一律记成 upload —— 以前就是这么写死的，但那样抓取脚本和批量导入
+     * 的资料也会被标成"用户上传"，统计口径就不准了。抓取脚本传 scrape 即可。
+     */
+    private String sourceType;
 }

@@ -251,9 +251,10 @@ function Start-XzService {
     # 不显式指定时 HotSpot 按「物理内存 1/4」推导堆大小：23GB 的机器会预留约 5.9GB，
     # 而当机器上同时开着虚拟机、GPT-SoVITS、IDE 时物理内存早已见底，
     # 进程会直接崩在 "insufficient memory for the Java Runtime Environment"（见 hs_err_pid*.log）。
-    # 本服务是 IO 密集型（收音频、调 LLM、合成语音），小堆足够，所以默认卡在 512m。
+    # 本服务是 IO 密集型（收音频、调 LLM、合成语音），小堆够用；但加载 SenseVoice 模型（230MB）后 512m 会紧张，
+    # 官方建议两个进程各 2G，这里折中取 1g（可用 XIAOZHI_MAX_HEAP 覆盖）。
     # 需要更大堆时设环境变量 XIAOZHI_MAX_HEAP（如 1g），不必改脚本。
-    $maxHeap = if ($env:XIAOZHI_MAX_HEAP) { $env:XIAOZHI_MAX_HEAP } else { '512m' }
+    $maxHeap = if ($env:XIAOZHI_MAX_HEAP) { $env:XIAOZHI_MAX_HEAP } else { '1g' }
     $minHeap = if ($env:XIAOZHI_MIN_HEAP) { $env:XIAOZHI_MIN_HEAP } else { '128m' }
 
     $proc = Start-Process -FilePath $javaBin `

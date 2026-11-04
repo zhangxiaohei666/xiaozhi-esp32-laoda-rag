@@ -60,8 +60,23 @@ public class RagProperties {
         /** 每次检索取多少条送进 prompt。 */
         private int topK = 5;
 
-        /** 相似度阈值，低于它的命中会被丢弃。 */
-        private double similarityThreshold = 0.35;
+        /** 相似度阈值，低于它的命中会被丢弃。实测：无关问题 0.39~0.49，正常问题 ≥0.65，取 0.50 分界。 */
+        private double similarityThreshold = 0.50;
+
+        /**
+         * 同一篇文档最多贡献几条命中。
+         *
+         * <p>实测问题：一篇长文档的多个块在向量空间里彼此很近，问「图书馆使用规则」时
+         * top5 全部来自同一篇，其他文档拿不到参考机会。
+         *
+         * <p>取值含义：
+         * <ul>
+         *   <li>1 → 严格去重，最大化多样性</li>
+         *   <li>2 → 默认，兼顾多样性与此篇内信息完整</li>
+         *   <li>≥ topK → 等于不去重（旧行为）</li>
+         * </ul>
+         */
+        private int maxPerDoc = 2;
     }
 
     /** 知识库文件与调试相关。 */

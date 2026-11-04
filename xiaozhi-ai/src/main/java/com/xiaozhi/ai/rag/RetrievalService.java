@@ -26,7 +26,7 @@ import java.util.Map;
  * <p>★ 设计红线：<b>任何异常都不许抛给对话链路</b>。检索失败就当"没查到"，
  * 让模型照常回答，绝不能让一次 RAG 故障把整轮对话打断。
  *
- * <p>环境变量：RAG_TOP_K（默认 5）、RAG_SIMILARITY_THRESHOLD（默认 0.35）
+ * <p>环境变量：RAG_TOP_K（默认 5）、RAG_SIMILARITY_THRESHOLD（默认 0.50）
  */
 @Slf4j
 @Component
@@ -35,15 +35,27 @@ public class RetrievalService {
     /** payload 里的可见性字段值：所有人可见（与 sys_knowledge_doc.scope 保持一致） */
     private static final String SCOPE_SHARED = "shared";
 
+    /**
+     * 单次检索最多向 Qdrant 取多少条。
+     *
+     * <p>下面要按「每篇最多 maxPerDoc 条」收敛，取回数不够就凑不满 topK；
+     * 但 maxPerDoc 被调大时取回数会跟着放大，这里设个上限兜住。
+     */
+    private static final int MAX_FETCH_K = 50;
+
     private final QdrantRagService ragService;
     private final int topK;
     private final double threshold;
+
+    /** 同一篇文档最多贡献几条命中；1=严格去重，topK=不去重 */
+    private final int maxPerDoc;
 
     public RetrievalService(QdrantRagService ragService, RagProperties properties) {
         this.ragService = ragService;
         this.topK = properties.getRetrieval().getTopK();
         this.threshold = properties.getRetrieval().getSimilarityThreshold();
-        log.info("RAG 检索配置: topK={}, 相似度阈值={}（来自 xiaozhi.rag.retrieval）", topK, threshold);
+        this.maxPerDoc = properties.getRetrieval().getMaxPerDoc();
+        log.info("RAG 检索配置: topK={}, 相似度阈值={}, 每篇最多 {} 条（来自 xiaozhi.rag.retrieval）", topK, threshold, maxPerDoc);
     }
 
     public int getTopK() {
@@ -76,18 +88,75 @@ public class RetrievalService {
                     ? b.eq("scope", SCOPE_SHARED).build()
                     : b.or(b.eq("user_id", userId), b.eq("scope", SCOPE_SHARED)).build();
 
+            // 多取一些：下面要按「每篇文档最多 N 条」收敛，取回数不够就凑不满 topK
+            int fetchK = Math.min(Math.max(topK, topK * Math.max(1, maxPerDoc)), MAX_FETCH_K);
             SearchRequest request = SearchRequest.builder()
                     .query(question)
-                    .topK(topK)
+                    .topK(fetchK)
                     .similarityThreshold(threshold)
                     .filterExpression(filter)
                     .build();
             List<Document> documents = ragService.vectorStore().similaritySearch(request);
-            return documents == null ? List.of() : documents;
+            if (documents == null || documents.isEmpty()) {
+                return List.of();
+            }
+            return limitPerDocument(documents, topK, maxPerDoc);
         } catch (Exception e) {
             log.warn("RAG 检索失败，本轮不注入参考资料: {}", brief(e));
             return List.of();
         }
+    }
+
+    /**
+     * 按「每篇文档最多 {@code maxPerDoc} 条」收敛，最多返回 {@code limit} 条。
+     *
+     * <p><b>为什么需要这一步</b>：一篇长文档会切成多个块，向量空间里这些块彼此很近。
+     * 实测（2026-11-04）问"图书馆使用规则"，top5 <b>全部来自 doc_id=5</b> ——
+     * 相当于 5 个额度被同一篇吃掉，其他 37 篇文档完全没有机会被参考。
+     *
+     * <p><b>为什么不是严格去重</b>：同一篇的不同小节往往都跟问题相关
+     * （比如"预约规则"分散在三个块里），只留一条会丢信息。
+     * 所以做成「每篇最多 N 条」而不是「每篇只留一条」：
+     * <ul>
+     *   <li>{@code maxPerDoc=1} → 严格去重，最大化多样性</li>
+     *   <li>{@code maxPerDoc=2} → 默认，兼顾多样性与同篇内的信息完整</li>
+     *   <li>{@code maxPerDoc=topK} → 等于不去重（旧行为）</li>
+     * </ul>
+     *
+     * <p>Qdrant 返回结果已按分数降序，所以同一篇里先遇到的就是分最高的那条。
+     *
+     * @param documents Qdrant 返回的候选（已按分数降序）
+     * @param limit     最多返回几条（即 topK）
+     * @param maxPerDoc 同一篇文档最多取几条
+     */
+    private static List<Document> limitPerDocument(List<Document> documents, int limit, int maxPerDoc) {
+        if (maxPerDoc <= 0) {
+            maxPerDoc = 1;
+        }
+        List<Document> picked = new ArrayList<>(Math.min(limit, documents.size()));
+        Map<String, Integer> perDoc = new java.util.HashMap<>();
+        for (Document document : documents) {
+            if (picked.size() >= limit) {
+                break;
+            }
+            // 没有 doc_id 的（极少见，早期数据）不参与限额，直接收
+            String docId = metaOf(document, "doc_id", "");
+            if (docId.isEmpty()) {
+                picked.add(document);
+                continue;
+            }
+            int used = perDoc.getOrDefault(docId, 0);
+            if (used >= maxPerDoc) {
+                continue;
+            }
+            perDoc.put(docId, used + 1);
+            picked.add(document);
+        }
+        if (picked.size() < documents.size()) {
+            log.debug("RAG 按文档限额收敛: 候选 {} 条 → 取 {} 条（topK={}, maxPerDoc={}）",
+                    documents.size(), picked.size(), limit, maxPerDoc);
+        }
+        return picked;
     }
 
     /**

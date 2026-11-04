@@ -188,7 +188,7 @@ public class KnowledgeIngestAppService {
         doc.setTitle(stripExtension(fileName));
         doc.setCategory(StringUtils.hasText(req.getCategory()) ? req.getCategory().trim() : null);
         doc.setScope(scope);
-        doc.setSourceType(KnowledgeDocBO.SOURCE_UPLOAD);
+        doc.setSourceType(resolveSourceType(req.getSourceType()));
         doc.setFileName(fileName);
         doc.setUrl(req.getUrl());
         doc.setPublishDate(parseDate(req.getPublishDate()));
@@ -200,6 +200,10 @@ public class KnowledgeIngestAppService {
      * 删除一份资料：Qdrant → 磁盘原文 → 账本。
      *
      * <p>三步都幂等，中途失败可以再点一次删除，不会残留半截状态。
+     *
+     * <p><b>Qdrant 这一步必须检查结果</b>：向量没删掉就把账本删了，
+     * 那份资料还会被检索命中 —— 等于"删了但没删干净"，属于隐私事故。
+     * 此时直接报错让用户重试，比静默成功安全。
      */
     public void delete(Long id, Integer userId) {
         KnowledgeDocBO doc = knowledgeDocService.get(id);
@@ -210,7 +214,12 @@ public class KnowledgeIngestAppService {
         knowledgeAccessGuard.assertCanModify(doc, userId);
 
         // ② Qdrant（先做可重试的外部动作）
-        qdrantRagService.deleteByDocId(id);
+        // ⚠️ RAG 未启用时本来就没有向量可删，deleteByDocId 也返回 false，
+        //    这种情况不能当成删除失败，所以先用 isEnabled() 区分开。
+        if (qdrantRagService.isEnabled() && !qdrantRagService.deleteByDocId(id)) {
+            throw new OperationFailedException(
+                    "向量库删除失败，该资料仍可能被检索到。请稍后重试（Qdrant 可能暂时不可用）");
+        }
         // ③ 磁盘原文（文件不在也不算失败）
         deleteStoredFile(doc.getFilePath());
         // ④ 账本
@@ -292,6 +301,24 @@ public class KnowledgeIngestAppService {
             log.debug("publishDate 格式不对，忽略: {}", value);
             return null;
         }
+    }
+
+    /**
+     * 归一化来源类型：只认 upload / scrape / import 三个值，其他（含空）一律按 upload。
+     *
+     * <p>为什么不直接信前端传的值：这列进了统计与筛选，
+     * 允许任意字符串会让前端一个拼写错误就产生一个新的"来源"分类。
+     */
+    private static String resolveSourceType(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return KnowledgeDocBO.SOURCE_UPLOAD;
+        }
+        String value = raw.trim().toLowerCase();
+        return switch (value) {
+            case KnowledgeDocBO.SOURCE_SCRAPE -> KnowledgeDocBO.SOURCE_SCRAPE;
+            case KnowledgeDocBO.SOURCE_IMPORT -> KnowledgeDocBO.SOURCE_IMPORT;
+            default -> KnowledgeDocBO.SOURCE_UPLOAD;
+        };
     }
 
     private static String stripExtension(String fileName) {
