@@ -65,6 +65,16 @@ xiaozhi:
     # OTA 下发的 WS 二进制帧版本：1=裸Opus，2=带时间戳(服务端AEC需要)，3=带长度头无时间戳
     websocket-protocol-version: 2
 
+  stt:
+    # server 进程是纯后台 API（管理界面、知识库、OTA 配置下发），不接设备音频，
+    # 不需要本地语音识别模型。这里设 false 有两个好处：
+    #   ① 省下约 230MB 的模型常驻内存，启动也快 2~4 秒
+    #   ② 不去和 dialogue 抢 Vosk 模型文件的独占锁
+    #      （Windows 上 Vosk 加载会独占打开模型目录，先启动的进程赢；
+    #        2026-11-04 实测就是 server 抢到锁，导致 dialogue 完全识别不了语音）
+    # 真正做识别的是 dialogue 进程，那边用 application-common.yml 的默认值 true。
+    local-enabled: ${XIAOZHI_STT_LOCAL_ENABLED:false}
+
 # ============================================================
 # SpringDoc OpenAPI 配置
 # ============================================================

@@ -159,7 +159,14 @@ public class DocumentIngestService {
      * - 原文链接：https://xxx
      * </pre>
      */
-    static HeaderInfo parseHeader(String text) {
+    /**
+     * 解析文件头部的元信息。
+     *
+     * <p><b>public 的原因</b>：编排层（{@code KnowledgeIngestAppService}）要在写账本之前
+     * 就知道这三个值 —— 否则抓取脚本不传参数时，Qdrant payload 里有值、MySQL 账本里却是空，
+     * 两边不一致。让两处共用同一套解析规则，就不会漂移。
+     */
+    public static HeaderInfo parseHeader(String text) {
         String category = "";
         String publishDate = "";
         String url = "";

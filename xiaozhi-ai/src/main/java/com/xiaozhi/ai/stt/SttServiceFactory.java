@@ -32,6 +32,20 @@ public class SttServiceFactory {
     @Value("${xiaozhi.stt.sense-voice.num-threads:2}")
     private int senseVoiceNumThreads = 2;
 
+    /**
+     * 是否加载本地识别模型。
+     *
+     * <p>这个开关存在的原因：本类是 xiaozhi-ai 的公共组件，{@code xiaozhi-server} 与
+     * {@code xiaozhi-dialogue} 两个进程启动时都会走 {@code @PostConstruct} 加载模型。
+     * 但 server 是纯后台 API（管理界面、知识库、OTA），不接设备音频，加载模型纯浪费内存；
+     * 更麻烦的是 Vosk 在 Windows 上会独占打开模型目录，先启动的一方抢到锁，
+     * 真正需要用它的 dialogue 反而加载失败 —— 表现为"设备说话没有任何识别"。
+     *
+     * <p>默认 true（dialogue 需要）；server 在自己的 application.yml 里覆盖为 false。
+     */
+    @Value("${xiaozhi.stt.local-enabled:true}")
+    private boolean localSttEnabled = true;
+
     // 缓存已初始化的服务：key format: "provider:configId"
     private final Map<String, SttService> serviceCache = new ConcurrentHashMap<>();
 
@@ -43,10 +57,16 @@ public class SttServiceFactory {
     private volatile String localDefaultProvider;
 
     /**
-     * 应用启动时加载本地识别模型：SenseVoice 优先，没有再试 Vosk
+     * 应用启动时加载本地识别模型：SenseVoice 优先，没有再试 Vosk。
+     *
+     * <p>{@code xiaozhi.stt.local-enabled=false} 时直接跳过（server 进程就是这么配的）。
      */
     @PostConstruct
     public void initializeDefaultSttService() {
+        if (!localSttEnabled) {
+            log.info("本地 STT 已禁用（xiaozhi.stt.local-enabled=false），跳过模型加载与文件占用");
+            return;
+        }
         if (initializeSenseVoice() != null) {
             localDefaultProvider = SENSE_VOICE_PROVIDER;
             log.info("默认语音识别服务为 sherpa-onnx SenseVoice");

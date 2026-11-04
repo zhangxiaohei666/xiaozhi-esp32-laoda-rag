@@ -116,6 +116,17 @@ xiaozhi:
     vosk-model-dir: models/vosk-model
     sense-voice-model-dir: models/sense-voice
     tts-models-dir: models/tts
+  stt:
+    # 是否加载本地语音识别模型（SenseVoice / Vosk）。
+    #
+    # 为什么要这个开关：SttServiceFactory 是 xiaozhi-ai 的公共组件，server 和 dialogue
+    # 两个进程启动时都会 @PostConstruct 加载模型。但 server 是纯后台 API（管理界面、
+    # 知识库、OTA），不接设备音频，加载识别模型纯属浪费内存；更糟的是 Vosk 在 Windows
+    # 上独占打开模型文件 —— 先启动的 server 抢到锁，真正要用的 dialogue 反而拿不到，
+    # 表现为"设备说话没有任何识别"（2026-11-04 实测就是这个状态）。
+    #
+    # 所以：server 设 false（省内存 + 不抢锁），dialogue 用默认 true。
+    local-enabled: ${XIAOZHI_STT_LOCAL_ENABLED:true}
   tts:
     sherpa:
       # 同时进行的本地合成数上限，0 表示按 CPU 核数自动推导（核数/4，最少 1）。

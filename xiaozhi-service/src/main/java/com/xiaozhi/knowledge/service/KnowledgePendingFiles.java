@@ -130,8 +130,28 @@ public class KnowledgePendingFiles {
         return ext;
     }
 
-    /** 落盘；返回 fileId 等基本信息。 */
+    /**
+     * 落盘（不分用户，等价于 {@code save(fileName, content, 0)}）。
+     *
+     * @deprecated 新代码请用 {@link #save(String, byte[], int)} 按归属人隔离目录，
+     *             否则多人传同名同内容文件时会互相把对方的待入库文件移走。
+     */
+    @Deprecated
     public PendingFile save(String fileName, byte[] content) throws IOException {
+        return save(fileName, content, 0);
+    }
+
+    /**
+     * 落盘到该用户自己的待入库子目录；返回 fileId 等基本信息。
+     *
+     * <p><b>为什么要按 ownerId 分目录</b>：fileId 只由「文件名 + 内容」算出，不含归属人。
+     * 以前所有用户共用一个 {@code .pending/} 目录，于是 A、B 传同名同内容文件时 fileId 相同，
+     * B 入库调 {@link #promote} 会把 A 的那份文件移走，A 再入库就报"待入库文件不存在"。
+     * 分开目录后两人各有一份，互不影响。
+     *
+     * @param ownerId 归属人，未登录传 0
+     */
+    public PendingFile save(String fileName, byte[] content, int ownerId) throws IOException {
         if (content == null || content.length == 0) {
             throw new IllegalArgumentException("文件为空");
         }
@@ -140,19 +160,38 @@ public class KnowledgePendingFiles {
         }
         String ext = requireSupportedExtension(fileName);
         String fileId = contentHash(fileName, content);
-        Files.createDirectories(pendingDir);
-        Path target = pendingDir.resolve(fileId + "-" + safeFileName(fileName));
+        Path dir = pendingDirOf(ownerId);
+        Files.createDirectories(dir);
+        Path target = dir.resolve(fileId + "-" + safeFileName(fileName));
         Files.write(target, content);
-        log.info("待入库文件已保存: fileId={}, 文件={}, {} 字节", fileId, fileName, content.length);
+        log.info("待入库文件已保存: fileId={}, 文件={}, {} 字节, owner={}", fileId, fileName, content.length, ownerId);
         return new PendingFile(fileId, fileName, content.length, ext, target);
     }
 
+    /** 某个归属人的待入库目录 */
+    private Path pendingDirOf(int ownerId) {
+        return pendingDir.resolve(String.valueOf(ownerId));
+    }
+
     /**
-     * 按 fileId 找到待入库文件。
+     * 按 fileId 找到待入库文件（不分用户）。
+     *
+     * @deprecated 新代码请用 {@link #find(String, int)}。
+     */
+    @Deprecated
+    public PendingFile find(String fileId) throws IOException {
+        return find(fileId, 0);
+    }
+
+    /**
+     * 按 fileId 找该归属人的待入库文件。
+     *
+     * <p>查找顺序：先 {@code .pending/<ownerId>/}，找不到再回退到 {@code .pending/} 根目录。
+     * 回退是为了兼容本改造之前上传、还没入库的文件（它们还在根目录里）。
      *
      * @throws IOException 找不到时（消息里带 fileId，便于排查）
      */
-    public PendingFile find(String fileId) throws IOException {
+    public PendingFile find(String fileId, int ownerId) throws IOException {
         if (fileId == null || fileId.isBlank()) {
             throw new IllegalArgumentException("缺少 fileId");
         }
@@ -160,19 +199,31 @@ public class KnowledgePendingFiles {
         if (!fileId.matches("[0-9a-fA-F]{8,64}")) {
             throw new IllegalArgumentException("fileId 格式不正确");
         }
-        try (Stream<Path> stream = Files.list(pendingDir)) {
-            Path hit = stream
+        Path hit = findIn(pendingDirOf(ownerId), fileId);
+        if (hit == null) {
+            // 向后兼容：改造前上传的文件在 .pending/ 根目录
+            hit = findIn(pendingDir, fileId);
+        }
+        if (hit == null) {
+            throw new IOException("待入库文件不存在或已被清理：fileId=" + fileId
+                    + "，请重新上传");
+        }
+        String nameWithId = hit.getFileName().toString();
+        String fileName = nameWithId.substring(nameWithId.indexOf('-') + 1);
+        String ext = requireSupportedExtension(fileName);
+        return new PendingFile(fileId, fileName, Files.size(hit), ext, hit);
+    }
+
+    /** 在指定目录里按 fileId 前缀找文件；目录不存在或没命中返回 null */
+    private static Path findIn(Path dir, String fileId) throws IOException {
+        if (!Files.isDirectory(dir)) {
+            return null;
+        }
+        try (Stream<Path> stream = Files.list(dir)) {
+            return stream
                     .filter(p -> p.getFileName().toString().startsWith(fileId + "-"))
                     .findFirst()
                     .orElse(null);
-            if (hit == null) {
-                throw new IOException("待入库文件不存在或已被清理：fileId=" + fileId
-                        + "，请重新上传");
-            }
-            String nameWithId = hit.getFileName().toString();
-            String fileName = nameWithId.substring(nameWithId.indexOf('-') + 1);
-            String ext = requireSupportedExtension(fileName);
-            return new PendingFile(fileId, fileName, Files.size(hit), ext, hit);
         }
     }
 
@@ -201,10 +252,20 @@ public class KnowledgePendingFiles {
         }
     }
 
-    /** 入库失败或明确不要了，删掉待入库文件。幂等。 */
+    /**
+     * 入库失败或明确不要了，删掉待入库文件（不分用户）。
+     *
+     * @deprecated 新代码请用 {@link #discard(String, int)}。
+     */
+    @Deprecated
     public void discard(String fileId) {
+        discard(fileId, 0);
+    }
+
+    /** 入库失败或明确不要了，删掉该归属人的待入库文件。幂等。 */
+    public void discard(String fileId, int ownerId) {
         try {
-            Files.deleteIfExists(find(fileId).path());
+            Files.deleteIfExists(find(fileId, ownerId).path());
         } catch (Exception e) {
             log.debug("清理待入库文件跳过: {}", e.getMessage());
         }

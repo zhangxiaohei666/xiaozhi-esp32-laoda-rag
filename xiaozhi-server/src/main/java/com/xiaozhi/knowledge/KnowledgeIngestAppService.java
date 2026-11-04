@@ -16,6 +16,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -77,6 +78,17 @@ public class KnowledgeIngestAppService {
     /**
      * 第二步：把待入库文件变成一条知识库文档。
      *
+     * <p><b>⚠️ 关于"失败后能不能用原 fileId 重试"</b>：
+     * 第 ③ 步 {@code promote()} 会在解析入库<b>之前</b>把文件从 {@code .pending/} 移进正式目录，
+     * 所以第 ④ 步失败时文件已经不在待入库区了 —— 再拿同一个 fileId 调本方法会报"待入库文件不存在"，
+     * <b>必须重新上传</b>。原文本身不会丢（已在正式目录），只是要重传一遍。
+     *
+     * <p>为什么不把 promote 挪到 ingest 之后：那样 ingest 成功而 promote 失败时，
+     * 向量和账本都成了、磁盘却没有原文，反而更难对齐；而且重建索引依赖磁盘原文。
+     * 两害相权，选了"先落盘"—— 数据不丢，代价是失败要重传。
+     * <b>如果要真正支持失败免重传</b>，正确改法是把 promote 挪到 ingest 之后，
+     * 并让 promote 失败时回滚已写入的向量与账本状态，而不是只调换两行顺序。
+     *
      * @param req    文件 id + 归类 + 可见性等
      * @param userId 归属人（**调用方从会话取，不能来自请求体**）
      * @return id、标题、字数、块数、状态
@@ -91,16 +103,23 @@ public class KnowledgeIngestAppService {
         // 第 3 层鉴权：非管理员不允许把资料设为共享
         knowledgeAccessGuard.assertCanCreateScope(scope);
 
-        KnowledgePendingFiles.PendingFile pending = readPending(req.getFileId());
+        // 归属人：待入库文件按它分目录（fileId 不含用户，共用一个目录会互相移走对方的文件）
+        int ownerId = userId == null ? 0 : userId;
+
+        KnowledgePendingFiles.PendingFile pending = readPending(req.getFileId(), ownerId);
         byte[] content = readBytes(pending);
         String fileName = pending.fileName();
-        int ownerId = userId == null ? 0 : userId;
 
         // ① 内容指纹（与身份无关，只由内容决定）
         String contentHash = DocumentIngestService.computeContentHash(content);
 
-        // ② 找到或创建账本记录，拿到 id
-        Long docId = resolveDocId(ownerId, contentHash, fileName, req, scope);
+        // ② 先解析文件头部元信息（抓取脚本会把「来源栏目/发布日期/原文链接」写在 md 头部）。
+        //    必须在写账本之前解析：以前 withMeta 只信请求参数，抓取脚本不传就是 null，
+        //    结果 Qdrant payload 有值、MySQL 账本却是空，两边对不上。
+        DocumentIngestService.HeaderInfo header = parseHeaderOf(content);
+
+        // ③ 找到或创建账本记录，拿到 id
+        Long docId = resolveDocId(ownerId, contentHash, fileName, req, scope, header);
 
         // ③ 原文落盘：把 .pending 的文件移到正式目录，返回相对路径
         String storedPath = pendingFileStore.promote(pending, docId);
@@ -124,7 +143,7 @@ public class KnowledgeIngestAppService {
         knowledgeDocService.markSuccess(docId, result.charCount(), result.chunkCount(), storedPath);
 
         // 待入库文件已经 move 走了，这里只是兜底清理（幂等）
-        pendingFileStore.discard(req.getFileId());
+        pendingFileStore.discard(req.getFileId(), ownerId);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("id", docId);
@@ -148,15 +167,16 @@ public class KnowledgeIngestAppService {
      * </ol>
      */
     private Long resolveDocId(int ownerId, String contentHash, String fileName,
-                              KnowledgeCreateReq req, String scope) {
+                              KnowledgeCreateReq req, String scope,
+                              DocumentIngestService.HeaderInfo header) {
         KnowledgeDocBO existing = knowledgeDocService.findByOwnerAndHash(ownerId, contentHash);
         if (existing != null) {
             knowledgeDocService.resetToProcessing(withMeta(existing.getId(), contentHash, ownerId,
-                    fileName, req, scope));
+                    fileName, req, scope, header));
             return existing.getId();
         }
 
-        KnowledgeDocBO doc = withMeta(null, contentHash, ownerId, fileName, req, scope);
+        KnowledgeDocBO doc = withMeta(null, contentHash, ownerId, fileName, req, scope, header);
         try {
             knowledgeDocService.insertProcessing(doc);
             return doc.getId();
@@ -168,7 +188,7 @@ public class KnowledgeIngestAppService {
             }
             log.info("并发重复上传，复用已有记录: id={}", again.getId());
             knowledgeDocService.resetToProcessing(withMeta(again.getId(), contentHash, ownerId,
-                    fileName, req, scope));
+                    fileName, req, scope, header));
             return again.getId();
         }
     }
@@ -180,18 +200,19 @@ public class KnowledgeIngestAppService {
      * 编排层不去猜。
      */
     private static KnowledgeDocBO withMeta(Long id, String contentHash, int ownerId,
-                                           String fileName, KnowledgeCreateReq req, String scope) {
+                                           String fileName, KnowledgeCreateReq req, String scope,
+                                           DocumentIngestService.HeaderInfo header) {
         KnowledgeDocBO doc = new KnowledgeDocBO();
         doc.setId(id);
         doc.setContentHash(contentHash);
         doc.setHashVersion(KnowledgeDocBO.HASH_VERSION_CURRENT);
         doc.setTitle(stripExtension(fileName));
-        doc.setCategory(StringUtils.hasText(req.getCategory()) ? req.getCategory().trim() : null);
+        doc.setCategory(blankTo(req.getCategory(), header.category()));
         doc.setScope(scope);
         doc.setSourceType(resolveSourceType(req.getSourceType()));
         doc.setFileName(fileName);
-        doc.setUrl(req.getUrl());
-        doc.setPublishDate(parseDate(req.getPublishDate()));
+        doc.setUrl(blankTo(req.getUrl(), header.url()));
+        doc.setPublishDate(parseDate(blankTo(req.getPublishDate(), header.publishDate())));
         doc.setUserId(ownerId);
         return doc;
     }
@@ -240,9 +261,9 @@ public class KnowledgeIngestAppService {
 
     // ---------- 内部工具 ----------
 
-    private KnowledgePendingFiles.PendingFile readPending(String fileId) {
+    private KnowledgePendingFiles.PendingFile readPending(String fileId, int ownerId) {
         try {
-            return pendingFileStore.find(fileId);
+            return pendingFileStore.find(fileId, ownerId);
         } catch (Exception e) {
             throw new ResourceNotFoundException(e.getMessage());
         }
@@ -301,6 +322,31 @@ public class KnowledgeIngestAppService {
             log.debug("publishDate 格式不对，忽略: {}", value);
             return null;
         }
+    }
+
+    /**
+     * 从原始字节解析文件头部元信息。
+     *
+     * <p>用 UTF-8 解码；解码异常就当作没有头部（返回全空），不让编码问题挡住入库。
+     * 抓取脚本产出的都是 UTF-8 md，这条路覆盖绝大多数情况。
+     */
+    private static DocumentIngestService.HeaderInfo parseHeaderOf(byte[] content) {
+        try {
+            return DocumentIngestService.parseHeader(new String(content, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return new DocumentIngestService.HeaderInfo("", "", "");
+        }
+    }
+
+    /** 取第一个非空白值；都为空返回 null（账本里该列可空，不要塞空串）。 */
+    private static String blankTo(String preferred, String fallback) {
+        if (StringUtils.hasText(preferred)) {
+            return preferred.trim();
+        }
+        if (StringUtils.hasText(fallback)) {
+            return fallback.trim();
+        }
+        return null;
     }
 
     /**

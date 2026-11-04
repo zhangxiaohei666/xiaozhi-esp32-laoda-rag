@@ -264,7 +264,7 @@ public class KnowledgeController extends BaseController {
 
         // ① 先落到 .pending（与两步式的第一步等价）
         com.xiaozhi.knowledge.service.KnowledgePendingFiles.PendingFile pending =
-                knowledgePendingFiles.save(fileName, file.getBytes());
+                knowledgePendingFiles.save(fileName, file.getBytes(), knowledgeAccessGuard.currentUserId());
 
         // ② 走统一编排入库
         KnowledgeCreateReq req = new KnowledgeCreateReq();

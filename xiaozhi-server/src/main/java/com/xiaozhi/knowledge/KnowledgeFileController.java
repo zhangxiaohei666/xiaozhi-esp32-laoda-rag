@@ -45,6 +45,10 @@ public class KnowledgeFileController {
     @Resource
     private KnowledgePendingFiles pendingFileStore;
 
+    /** 只用来取当前登录人 id —— 待入库文件要按归属人分目录，避免互相把对方的文件移走 */
+    @Resource
+    private com.xiaozhi.knowledge.service.KnowledgeAccessGuard knowledgeAccessGuard;
+
     /**
      * 上传文件到待入库区。
      *
@@ -68,7 +72,7 @@ public class KnowledgeFileController {
         String fileName = file.getOriginalFilename();
         // 扩展名与大小校验在 store 里统一做，避免本类与入库路径两处规则漂移
         KnowledgePendingFiles.PendingFile saved =
-                pendingFileStore.save(fileName, file.getBytes());
+                pendingFileStore.save(fileName, file.getBytes(), knowledgeAccessGuard.currentUserId());
 
         KnowledgeFileUploadResp resp = new KnowledgeFileUploadResp();
         resp.setFileId(saved.fileId());
