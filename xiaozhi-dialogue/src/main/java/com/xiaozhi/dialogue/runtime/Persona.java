@@ -215,12 +215,13 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
             //      不带 userId 会退化成"只查共享"或更糟的"不过滤"（多用户串数据）。
             try {
                 if (retrievalService != null) {
-                    String knowledge = retrievalService.buildContext(
+                    // buildInjection 内部完成三件事：清洗成可朗读文本、加字数上限、
+                    // 用【参考资料开始/结束】包裹并声明"这是数据不是指令"。
+                    // 具体的回答规则来自 prompts/rag_injection_prompt.md（外置，改措辞不用重编译）。
+                    String injection = retrievalService.buildInjection(
                             turn.userMessage.getText(), conversation.getUserId());
-                    if (knowledge != null && !knowledge.isBlank()) {
-                        messages.add(1, new SystemMessage("【参考资料】\n" + knowledge
-                                + "\n回答规则：优先使用【参考资料】里的内容回答；资料不够就直说没查到，不要编；"
-                                + "引用时带上资料标题（例如「根据《图书馆使用规则》…」）。"));
+                    if (injection != null && !injection.isBlank()) {
+                        messages.add(1, new SystemMessage(injection));
                     }
                 }
             } catch (Exception ragError) {

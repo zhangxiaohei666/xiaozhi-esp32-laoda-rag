@@ -237,8 +237,14 @@ public class KnowledgePendingFiles {
      * <p>用自增 id 做前缀（而不是内容哈希）有两个好处：id 全局唯一所以跨用户不会撞名；
      * id 永不变所以文件名稳定，重新入库不会在磁盘上留两份。
      *
+     * <p><b>失败时必须显眼</b>：以前 catch 里只 `log.warn("不影响入库")` 就返回空串，
+     * 结果是"入库显示成功、磁盘上没有原文"，只有到删文档或换 embedding 模型重建索引时
+     * 才暴露（那时已经无法重建）。所以这里改成 {@code log.error} 并带上 docId 与文件名，
+     * 同时把返回值约定写清楚，让调用方能判断。
+     *
      * @return <b>相对上传根目录的路径</b>（如 {@code 3-图书馆规则.md}）；
-     *         移动失败返回空串表示"没有正式副本"，不影响入库结果
+     *         移动失败返回空串表示"没有正式副本" —— 调用方应把它当成**降级成功**，
+     *         而不是完全成功（该文档无法重建索引）
      */
     public String promote(PendingFile file, Long docId) {
         try {
@@ -247,7 +253,10 @@ public class KnowledgePendingFiles {
             Files.move(file.path(), target, StandardCopyOption.REPLACE_EXISTING);
             return root.relativize(target).toString();
         } catch (Exception e) {
-            log.warn("原件从 .pending 移到正式目录失败（不影响入库）: {}", e.getMessage());
+            // 用 error 级别 + 带上 docId：这条日志出现就意味着该文档以后无法重建索引，
+            // 运维必须能在日志里直接定位是哪一篇
+            log.error("原文落盘失败，该文档将无法重建索引: docId={}, 文件={}, 目标目录={}, 原因={}",
+                    docId, file.fileName(), root, e.getMessage());
             return "";
         }
     }

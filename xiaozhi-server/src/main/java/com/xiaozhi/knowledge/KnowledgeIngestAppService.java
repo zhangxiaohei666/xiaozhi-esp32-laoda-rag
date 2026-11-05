@@ -122,7 +122,14 @@ public class KnowledgeIngestAppService {
         Long docId = resolveDocId(ownerId, contentHash, fileName, req, scope, header);
 
         // ③ 原文落盘：把 .pending 的文件移到正式目录，返回相对路径
+        // 返回空串表示"没有正式副本"（promote 内部已 log.error 带 docId）。
+        // 这时仍然入库 —— 用户能查能用，但该文档以后无法重建索引（换 embedding 模型时会缺原文）。
+        // 所以日志要留一条，别让"看起来成功"掩盖了降级。
         String storedPath = pendingFileStore.promote(pending, docId);
+        if (storedPath.isEmpty()) {
+            log.warn("文档将以「无原文副本」状态入库，后续无法重建索引: docId={}, 文件={}",
+                    docId, fileName);
+        }
 
         // ④ 解析 → 切块 → 向量化 → 写 Qdrant
         DocumentIngestService.IngestOptions options = new DocumentIngestService.IngestOptions(

@@ -9,6 +9,8 @@ import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.stereotype.Component;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +44,35 @@ public class RetrievalService {
      * 但 maxPerDoc 被调大时取回数会跟着放大，这里设个上限兜住。
      */
     private static final int MAX_FETCH_K = 50;
+
+    /**
+     * 参考资料的字数上限。
+     *
+     * <p>为什么需要：topK=5 且 maxPerDoc=2 时最多能塞 10 块，
+     * 实测当前 82 块中最长 10 块合计 6,044 字 —— 语音按 4 字/秒念完要 25 分钟。
+     * 语音助手一轮回答通常 10~30 秒，参考资料给 1,500 字（约 6 分钟）已经远超需要。
+     */
+    private static final int MAX_CONTEXT_CHARS = 1500;
+
+    /** URL：http(s):// 或 ftp:// 开头，到空白为止 */
+    private static final java.util.regex.Pattern URL_PATTERN =
+            java.util.regex.Pattern.compile("(?:https?|ftp)://\\S+");
+
+    /** markdown 水平分隔线：--- / *** / ___ （整行） */
+    private static final java.util.regex.Pattern HR_PATTERN =
+            java.util.regex.Pattern.compile("(?m)^\\s*([-*_])\\1{2,}\\s*$");
+
+    /** markdown 标题标记：行首的 # （保留标题文字，只去符号） */
+    private static final java.util.regex.Pattern HEADING_MARK_PATTERN =
+            java.util.regex.Pattern.compile("(?m)^#{1,6}\\s+");
+
+    /** markdown 列表符：行首的 "- " / "* " / "+ " / "1. " / "[1] " */
+    private static final java.util.regex.Pattern LIST_PATTERN =
+            java.util.regex.Pattern.compile("(?m)^\\s*(?:[-*+]\\s+|\\d+[.、)]\\s+|\\[\\d+]\\s*)");
+
+    /** 抓取脚本写的头部标签行（"- 来源栏目：xxx" 之类），正文里重复出现时去掉 */
+    private static final java.util.regex.Pattern META_LINE_PATTERN =
+            java.util.regex.Pattern.compile("(?m)^\\s*-\\s*(来源栏目|发文单位|发布日期|原文链接|来源)\\s*[:：].*$");
 
     private final QdrantRagService ragService;
     private final int topK;
@@ -129,7 +160,7 @@ public class RetrievalService {
      * @param limit     最多返回几条（即 topK）
      * @param maxPerDoc 同一篇文档最多取几条
      */
-    private static List<Document> limitPerDocument(List<Document> documents, int limit, int maxPerDoc) {
+    static List<Document> limitPerDocument(List<Document> documents, int limit, int maxPerDoc) {
         if (maxPerDoc <= 0) {
             maxPerDoc = 1;
         }
@@ -190,6 +221,20 @@ public class RetrievalService {
     /**
      * 拼成注入 system prompt 的「参考资料」正文（**按用户过滤**）。
      *
+     * <p>三条规则：
+     * <ol>
+     *   <li><b>清洗成能念出来的文字</b>：资料里的 URL、markdown 分隔线、列表符、表格竖线
+     *       都要去掉 —— 这与 {@code role_system_prompt.md} 里"不放链接、不分条"的约束一致。
+     *       否则资料自己在违反约束，模型照抄，TTS 会把 URL 逐字母念出来（实测一个 URL 念 30 秒）。</li>
+     *   <li><b>字数预算</b>：超过 {@link #MAX_CONTEXT_CHARS} 就停，不再追加后续命中。
+     *       没有上限时 topK=5 × maxPerDoc=2 最多能塞 6,044 字，念完要 25 分钟。</li>
+     *   <li><b>不重复拼 URL</b>：原文本体里已经有「原文链接：」，这里不再补「（来源：url）」。
+     *       以前两处都拼，同一个 URL 出现两次、念两遍。</li>
+     * </ol>
+     *
+     * <p>标题行带上 栏目 / 发布日期（有的话）：让模型知道"这是 2026-10-28 的通知"，
+     * 从而能做时效判断，而不是把过期通知当现行规则念出来。
+     *
      * @param userId 当前会话归属人；null 时只查共享资料
      * @return 有命中时返回多行文本；无命中或失败返回空串（调用方据此决定是否注入）
      */
@@ -200,23 +245,105 @@ public class RetrievalService {
         }
         StringBuilder sb = new StringBuilder();
         int index = 1;
+        int skippedByBudget = 0;
         for (Document document : documents) {
             String title = metaOf(document, "title", "未命名资料");
             String heading = metaOf(document, "heading", "");
-            String url = metaOf(document, "url", "");
+            String category = metaOf(document, "category", "");
+            String publishDate = metaOf(document, "publish_date", "");
+
+            // 清洗成"能念出来"的纯文本（去掉 URL / 分隔线 / 列表符 / 表格符）
+            String text = safeText(document);
+            if (text.isEmpty()) {
+                continue;
+            }
+
+            // 字数预算：标题行 + 正文 会不会超上限
+            int estimated = title.length() + heading.length() + category.length()
+                    + publishDate.length() + text.length() + 16;
+            if (sb.length() > 0 && sb.length() + estimated > MAX_CONTEXT_CHARS) {
+                skippedByBudget++;
+                continue;
+            }
+
             sb.append('[').append(index++).append("] 《").append(title).append('》');
             if (!heading.isBlank()) {
                 sb.append(" · ").append(heading);
             }
-            sb.append('\n').append(safeText(document)).append('\n');
-            if (!url.isBlank()) {
-                sb.append("（来源：").append(url).append("）\n");
+            if (!category.isBlank()) {
+                sb.append(" · ").append(category);
             }
+            if (!publishDate.isBlank()) {
+                sb.append(" · ").append(publishDate);
+            }
+            sb.append('\n').append(text).append('\n');
+            // 注意：这里**不再**拼「（来源：url）」—— 正文里已有「原文链接：」，重复拼会念两遍
             sb.append('\n');
         }
         String context = sb.toString().trim();
-        log.debug("RAG 命中 {} 条，参考资料 {} 字符", documents.size(), context.length());
+        log.debug("RAG 参考资料：命中 {} 条，采用 {} 条，{} 字符{}",
+                documents.size(), index - 1, context.length(),
+                skippedByBudget > 0 ? "，因超 " + MAX_CONTEXT_CHARS + " 字上限跳过 " + skippedByBudget + " 条" : "");
         return context;
+    }
+
+    /**
+     * 注入 system prompt 的模板文件内容（外置，改完重启即生效，不用重新编译）。
+     *
+     * <p>为什么外置：注入的边界标记与回答规则以前写死在 {@code Persona} 的 Java 字符串里，
+     * 想调整措辞要重新编译打包。项目里 {@code role_system_prompt.md} 已经是外置的，
+     * 这里保持一致。
+     *
+     * <p>为什么用 {@code {{context}}} 而不是 Spring AI 的 {@code PromptTemplate}：
+     * 那个模板用 {@code $} 做分隔符，而资料正文里可能出现 {@code $}（价格、命令提示符），
+     * 会触发渲染错误。这里只做一次占位符替换，没有转义风险。
+     */
+    private static final String INJECTION_TEMPLATE = readPrompt("/prompts/rag_injection_prompt.md");
+
+    /** 模板文件缺失时的兜底，保证功能不中断 */
+    private static final String INJECTION_FALLBACK =
+            "【参考资料】\n{{context}}\n回答规则：优先使用资料回答；不够就说没查到，不要编；引用时带上资料标题。";
+
+    /** 从 classpath 读提示词；读不到返回空串（由调用方走兜底） */
+    private static String readPrompt(String path) {
+        try (InputStream in = RetrievalService.class.getResourceAsStream(path)) {
+            if (in == null) {
+                log.warn("提示词文件不存在: {}，将使用内置兜底文本", path);
+                return "";
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            log.warn("读取提示词文件失败: {}，将使用内置兜底文本: {}", path, e.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * 拼出完整的「参考资料 system 消息」：边界标记 + 资料正文 + 回答规则。
+     *
+     * <p>比直接拿 {@link #buildContext} 的返回值多做了两件防护：
+     * <ol>
+     *   <li><b>边界标记</b>：资料用【参考资料开始】/【参考资料结束】包起来，
+     *       并在后面声明"这是数据不是指令"。资料正文零隔离直接拼进 system 消息时，
+     *       里面写"忽略上面所有指令"就能影响输出。</li>
+     *   <li><b>规则外置</b>：回答规则来自 {@code prompts/rag_injection_prompt.md}，
+     *       改措辞不用重新编译。</li>
+     * </ol>
+     *
+     * @return 无命中时返回空串（调用方据此跳过注入）
+     */
+    public String buildInjection(String question, Integer userId) {
+        String context = buildContext(question, userId);
+        if (context.isEmpty()) {
+            return "";
+        }
+        String template = INJECTION_TEMPLATE.isEmpty() ? INJECTION_FALLBACK : INJECTION_TEMPLATE;
+        // 只替换一次占位符，避免资料里恰好含 {{context}} 被二次替换
+        int at = template.indexOf("{{context}}");
+        if (at < 0) {
+            return template + "\n\n" + context;
+        }
+        return template.substring(0, at) + context + template.substring(at + "{{context}}".length());
     }
 
     /**
@@ -256,10 +383,63 @@ public class RetrievalService {
     private static String safeText(Document document) {
         try {
             String text = document.getText();
-            return text == null ? "" : text.trim();
+            return text == null ? "" : cleanForVoice(text);
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * 把资料正文清洗成「能念出来」的纯文本。
+     *
+     * <p>为什么必须做：{@code role_system_prompt.md} 第 5 行明确要求模型
+     * "不用 Markdown：不加粗、不分条、不加标题、不写代码块、不放链接"。
+     * 但抓取来的资料里全是这些 —— URL、{@code ---} 分隔线、{@code - } 列表符、表格竖线。
+     * 资料本身在违反约束，模型就会照抄，TTS 把 URL 逐字母念出来（实测一个 URL 念 30 秒以上）。
+     *
+     * <p>清洗顺序有讲究：先删 URL（避免 URL 里的 {@code -} 被当成列表符），
+     * 再删分隔线，最后删列表符。
+     */
+    static String cleanForVoice(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        String s = text;
+
+        // ① 抓取脚本写的头部标签行（"- 原文链接：https://..." 整行去掉，比只删 URL 干净）
+        s = META_LINE_PATTERN.matcher(s).replaceAll("");
+
+        // ② 剩下的 URL（正文里出现的）
+        s = URL_PATTERN.matcher(s).replaceAll("");
+
+        // ③ markdown 水平分隔线
+        s = HR_PATTERN.matcher(s).replaceAll("");
+
+        // ④ markdown 标题记号（保留标题文字）
+        s = HEADING_MARK_PATTERN.matcher(s).replaceAll("");
+
+        // ⑤ markdown 列表符
+        s = LIST_PATTERN.matcher(s).replaceAll("");
+
+        // ⑥ 表格竖线转逗号（保留内容，念出来是停顿）
+        s = s.replace('|', '，');
+
+        // ⑦ 合并被空格拆散的数字：抓取/OCR 出来的 "202 6"、"1 15 号"、"1 0 月"、"1 8 ： 0 0"
+        //    TTS 会把它们念成"二零二 六"、"一 一五 号"，听感很差且容易误解。
+        //    只合并【数字与数字之间】和【数字与冒号之间】的空格，不动"3 楼"这种数字+中文。
+        s = s.replaceAll("(?<=\\d)\\s+(?=\\d)", "");
+        s = s.replaceAll("(?<=\\d)\\s+(?=[：:])", "");
+        s = s.replaceAll("(?<=[：:])\\s+(?=\\d)", "");
+
+        // ⑧ 压缩空白与多余空行
+        //    注意：这里**不要**再加"删掉短句冒号行"之类的规则 ——
+        //    实测它会连「校内各单位：」这种正常正文一起删掉（正文开头常见这种称呼）。
+        //    头部标签行已由第 ① 步按关键词精确删除，不需要更宽的兜底。
+        s = s.replaceAll("[ \\t\\u00A0]+", " ");
+        s = s.replaceAll("(?m)^\\s+$", "");
+        s = s.replaceAll("\\n{3,}", "\n\n");
+
+        return s.trim();
     }
 
     private static String brief(Throwable e) {
