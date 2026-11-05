@@ -12,6 +12,7 @@ import com.xiaozhi.utils.DateUtils;
 import jakarta.annotation.Resource;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -51,6 +52,13 @@ public class TextChatService {
     private ConversationFactory conversationFactory;
 
     /**
+     * RAG 检索服务。{@code required = false}：知识库未启用（未配 Qdrant / embedding）时
+     * 这个 bean 不存在，网页聊天仍要能正常工作。
+     */
+    @Resource
+    private com.xiaozhi.ai.rag.RetrievalService retrievalService;
+
+    /**
      * 建立按 sessionId 加载历史与摘要的对话（新会话为空，续接会拉到历史）。
      *
      * @param ownerId   聊天参与者标识
@@ -87,7 +95,30 @@ public class TextChatService {
         conversation.add(userMessage);
 
         // 文本聊天无位置
-        List<Message> messages = conversation.messages(ConversationContext.EMPTY);
+        // ⚠️ 必须包一层 new ArrayList<>：conversation.messages() 返回的是投影后的只读视图，
+        //    直接 add 会抛 UnsupportedOperationException。
+        List<Message> messages = new ArrayList<>(conversation.messages(ConversationContext.EMPTY));
+
+        // ── RAG 注入 ──────────────────────────────────────────────────────────
+        // 与设备链路（Persona.chatStream）保持一致的三个要点：
+        //   ① 必须带 userId —— 检索只返回「本人的私有资料 + 所有人共享的资料」；
+        //      不带 userId 会退化成"只查共享"甚至"不过滤"（多用户串数据）。
+        //   ② 注入失败绝不能影响对话 —— 整段用 try-catch 兜住，失败就当没参考资料。
+        //   ③ 插在 messages[1]（系统提示词之后、历史之前），与 Persona 位置一致。
+        //
+        // 历史背景：网页聊天此前完全没有 RAG（TextChatService 里 search 不到任何 rag 字样），
+        // 同一个问题「图书馆几点开门」在 ESP32 上有答案、在网页里模型答"不知道"，
+        // 两个入口能力不一致。
+        try {
+            if (retrievalService != null) {
+                String injection = retrievalService.buildInjection(userText, conversation.getUserId());
+                if (injection != null && !injection.isBlank()) {
+                    messages.add(1, new SystemMessage(injection));
+                }
+            }
+        } catch (Exception ragError) {
+            log.warn("网页聊天 RAG 注入失败，本轮按无参考资料处理: {}", ragError.getMessage());
+        }
 
         Prompt prompt = new Prompt(messages);
 

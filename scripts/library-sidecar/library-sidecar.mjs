@@ -70,6 +70,14 @@ let page = null;
 let token = null;
 let tokenExpAt = 0;
 let loginRequired = false;
+/**
+ * 人工登录保护期（epoch ms）。在这个时间点之前，心跳一律跳过。
+ *
+ * <p>为什么需要：心跳里会 {@code page.goto(CAS 入口)}（保活 TGT）或 {@code forceRelogin()}
+ * （清 sessionStorage + 重走 CAS）。如果人正在窗口里输验证码，页面被跳走 = 前功尽弃。
+ * 早期版本没有这个保护，实测会在填表途中被心跳打断。
+ */
+let humanLoginUntil = 0;
 let lastRenewAt = 0;
 let renewing = null;
 
@@ -386,6 +394,98 @@ async function quickRetry() {
  *   ② 后台每 2 秒轮询一次，什么时候登录成功什么时候接住
  *   ③ 成功后自动落盘 cookie，无需任何后续操作
  */
+/**
+ * 把侧车的浏览器窗口"露出来"，停在 CAS 登录页，**不自动填表、不自动提交**。
+ *
+ * <p>与 {@link manualLogin} 的区别：
+ * <ul>
+ *   <li>manualLogin：自动填账号密码 + 勾记住我，人只输验证码</li>
+ *   <li>openBrowserForManual：什么都不填，完全交给人操作 —— 适合想自己走一遍登录流程的场景</li>
+ * </ul>
+ *
+ * <p>两者的共同点：打开后用轮询盯着 sessionStorage，一旦检测到 token 就自动保存，不用再管。
+ */
+async function openBrowserForManual({ watchMs = 180000 } = {}) {
+  if (context) {
+    await context.close().catch(() => {});
+    context = null;
+    page = null;
+  }
+  loginRequired = true;
+  humanLoginUntil = Date.now() + watchMs;   // 让心跳在人工操作期间闭嘴
+  await ensureBrowser({ headed: true });
+
+  log('已打开有头浏览器，停在 CAS 登录页（不自动填表）');
+  log(`心跳将在 ${Math.round(watchMs / 1000)} 秒内跳过，不会打扰你填表`);
+  await page
+    .goto(`${BASE}/v4/login/cas`, { waitUntil: 'domcontentloaded', timeout: 60000 })
+    .catch((e) => log('打开登录页失败:', e.message));
+
+  // 后台盯着：用户自己登录成功后，前端会把 token 写进 sessionStorage
+  (async () => {
+    const deadline = Date.now() + watchMs;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(2000).catch(() => {});
+      let t;
+      try {
+        t = await readTokenFromPage();
+      } catch {
+        t = null;
+      }
+      if (t && readJwtExp(t) > Date.now() + 60_000) {
+        applyToken(t);
+        await persistCookies();
+        loginRequired = false;
+        humanLoginUntil = 0;   // 登录完成，恢复心跳
+        const leftMin = Math.round((tokenExpAt - Date.now()) / 60000);
+        log(`✅ 检测到你已登录，token 已保存（剩余 ${leftMin} 分钟），心跳已恢复`);
+        return;
+      }
+    }
+    humanLoginUntil = 0;
+    log('⚠️ 保护期内没检测到登录。心跳已恢复；如果还要登，请再点一次「打开浏览器窗口」');
+  })();
+
+  return {
+    ok: true,
+    message: '浏览器窗口已打开，停在学校的登录页。请自己完成登录（账号、密码、验证码都由你操作）。登录成功后侧车会自动抓取 token。',
+  };
+}
+
+/**
+ * 从**当前页面**主动读一次 token 并保存。
+ *
+ * <p>用途：人在浏览器窗口里自己登录完成后，调这个接口把 token 收进来。
+ * 与 {@link openBrowserForManual} 的区别：那个是"开窗口 + 后台盯 3 分钟"，
+ * 这个是"窗口已经登好了，立刻去读一次" —— 不会跳页面、不会重登、不打扰人操作。
+ *
+ * <p>为什么必须手动触发：轮询有时间窗（默认 3 分钟），人如果登得慢，
+ * 窗口过期后就没人再读了，token 白拿。
+ */
+async function pickupToken() {
+  if (!page) {
+    return { ok: false, message: '浏览器还没启动。请先点「打开浏览器窗口」' };
+  }
+  const t = await readTokenFromPage().catch(() => null);
+  if (!t) {
+    return {
+      ok: false,
+      message: '当前页面没找到 token。可能还没登录成功，或者页面停在别的地方。请在窗口里完成登录后再点一次。',
+    };
+  }
+  const exp = readJwtExp(t);
+  if (!exp || exp <= Date.now() + 60_000) {
+    return { ok: false, message: '页面里的 token 已过期或快过期了，请重新登录' };
+  }
+  applyToken(t);
+  await persistCookies();
+  loginRequired = false;
+  humanLoginUntil = 0;
+  const leftMin = Math.round((tokenExpAt - Date.now()) / 60000);
+  log(`✅ 手动抓取成功，token 已保存（剩余 ${leftMin} 分钟），心跳已恢复`);
+  return { ok: true, message: `token 已保存，剩余 ${leftMin} 分钟`, tokenLeftMin: leftMin };
+}
+
 async function manualLogin({ blocking = false } = {}) {
   if (context) {
     await context.close().catch(() => {});
@@ -487,11 +587,218 @@ function applyToken(t) {
 }
 
 // ============ HTTP ============
+// ============ 本地网页控制台 ============
+// 为什么要这个：用 pwsh 敲 start-library.ps1 relogin 不方便，也不直观。
+// 浏览器打开 http://127.0.0.1:8790/ 就能看状态、点按钮登录，全在浏览器里操作。
+const CONTROL_PANEL_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>图书馆侧车 · 控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         max-width: 780px; margin: 40px auto; padding: 0 20px; color: #222; background: #fafafa; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+  .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eee; font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .ok { color: #1a7f37; font-weight: 600; }
+  .bad { color: #cf222e; font-weight: 600; }
+  .warn { color: #9a6700; font-weight: 600; }
+  button { font-size: 15px; padding: 11px 20px; border-radius: 8px; border: 1px solid #d0d7de;
+           background: #f6f8fa; cursor: pointer; margin-right: 10px; margin-bottom: 8px; }
+  button:hover { background: #eef1f4; }
+  button.primary { background: #1f883d; color: #fff; border-color: #1f883d; }
+  button.primary:hover { background: #1a7f37; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  pre { background: #0d1117; color: #c9d1d9; padding: 14px; border-radius: 8px;
+        font-size: 12.5px; line-height: 1.6; max-height: 280px; overflow: auto; margin: 0; }
+  .hint { font-size: 13px; color: #666; line-height: 1.7; }
+  .hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<h1>图书馆侧车控制台</h1>
+<div class="sub">127.0.0.1:8790 · 只监听本机</div>
+
+<div class="card">
+  <div class="row"><span>登录状态</span><span id="state">—</span></div>
+  <div class="row"><span>token 剩余</span><span id="left">—</span></div>
+  <div class="row"><span>cookie 文件</span><span id="ck">—</span></div>
+  <div class="row"><span>上次续期</span><span id="renew">—</span></div>
+</div>
+
+<div class="card">
+  <button class="primary" id="btnLogin" onclick="doRelogin()">🤖 自动填表登录（只需输验证码）</button>
+  <button id="btnBrowser" onclick="doOpenBrowser()">🌐 打开浏览器窗口（完全自己操作）</button>
+  <button id="btnPickup" onclick="doPickup()">📥 抓取 token</button>
+  <button onclick="refresh()">🔄 刷新状态</button>
+  <button onclick="clearLog()">清空日志</button>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>两种登录方式，任选一个</b><br>
+    <span style="color:#1f883d">🤖 自动填表</span>：侧车把账号密码填好、勾上「记住我」，<b>你只输 4 位验证码</b>（推荐）<br>
+    <span style="color:#0969da">🌐 自己操作</span>：弹出干净的登录页，账号密码验证码全由你自己来<br>
+    <br>
+    两种方式登录成功后，token 自动保存，<b>100 分钟内自动续期</b>，不用再管。<br>
+    如果自动没抓到，点一下「📥 抓取 token」手动收一次。<br>
+    <br>
+    <b>什么时候需要重新登录</b><br>
+    · 重启电脑后　· 关掉侧车的浏览器后<br>
+    · 状态显示 <span class="bad">未登录</span> 或调用图书馆功能报「服务未登录」时
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <b style="font-size:14px">操作日志</b>
+    <span style="font-size:12px;color:#888" id="logTime"></span>
+  </div>
+  <pre id="log">等待操作…</pre>
+</div>
+
+<script>
+function log(msg) {
+  var el = document.getElementById('log');
+  var t = new Date().toLocaleTimeString('zh-CN');
+  if (el.textContent === '等待操作…') el.textContent = '';
+  el.textContent += '[' + t + '] ' + msg + '\\n';
+  el.scrollTop = el.scrollHeight;
+  document.getElementById('logTime').textContent = '最后更新 ' + t;
+}
+function clearLog() {
+  document.getElementById('log').textContent = '等待操作…';
+}
+
+function setState(id, text, cls) {
+  var el = document.getElementById(id);
+  el.textContent = text;
+  el.className = cls || '';
+}
+
+async function refresh() {
+  try {
+    var r = await fetch('/health', { cache: 'no-store' });
+    var h = await r.json();
+    if (h.hasToken) {
+      setState('state', '已登录 ✅', 'ok');
+      setState('left', h.tokenLeftMin + ' 分钟', h.tokenLeftMin > 10 ? 'ok' : 'warn');
+    } else {
+      setState('state', h.loginRequired ? '需要登录 🔐' : '未登录', 'bad');
+      setState('left', '—', '');
+    }
+    setState('ck', h.cookieFileExists ? '有' : '无', h.cookieFileExists ? 'ok' : 'warn');
+    setState('renew', h.lastRenewAt ? new Date(h.lastRenewAt).toLocaleTimeString('zh-CN') : '从未');
+    return h;
+  } catch (e) {
+    setState('state', '连不上侧车', 'bad');
+    return null;
+  }
+}
+
+// 人在窗口里自己登完了，点这个按钮让侧车去页面读一次 token
+async function doPickup() {
+  log('正在从浏览器页面抓取 token…');
+  try {
+    var r = await fetch('/token/pickup', { method: 'POST' });
+    var j = await r.json();
+    log((j.ok ? '✅ ' : '⚠️ ') + (j.message || ''));
+    refresh();
+  } catch (e) {
+    log('❌ 抓取失败: ' + e.message);
+  }
+}
+
+async function doOpenBrowser() {
+  var btn = document.getElementById('btnBrowser');
+  btn.disabled = true;
+  log('正在打开浏览器窗口…');
+  try {
+    var r = await fetch('/browser', { method: 'POST' });
+    var j = await r.json();
+    log(j.message || (j.ok ? '已打开' : '失败'));
+    log('👉 切到弹出的窗口，自己完成登录。登录成功后这里的状态会自动变成「已登录」');
+    waitForToken(btn);
+  } catch (e) {
+    log('❌ 请求失败: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+// 轮询等 token 出现（登录成功就提示）
+function waitForToken(btn) {
+  var tries = 0;
+  var timer = setInterval(async function () {
+    tries++;
+    var h = await refresh();
+    if (h && h.hasToken) {
+      clearInterval(timer);
+      log('✅ 登录成功！token 剩余 ' + h.tokenLeftMin + ' 分钟');
+      btn.disabled = false;
+    } else if (tries > 90) {
+      clearInterval(timer);
+      log('⚠️ 3 分钟内没检测到登录。窗口还开着的话继续登；关了可以再点一次。');
+      btn.disabled = false;
+    }
+  }, 3000);
+}
+
+async function doRelogin() {
+  var btn = document.getElementById('btnLogin');
+  btn.disabled = true;
+  log('正在唤起登录窗口…');
+  try {
+    var r = await fetch('/relogin', { method: 'POST' });
+    var j = await r.json();
+    log(j.message || (j.ok ? '已触发' : '失败'));
+    log('👉 请切到弹出的 Chrome 窗口，输入验证码后点登录');
+    // 之后每 3 秒看一次状态，登录成功就提示
+    var tries = 0;
+    var timer = setInterval(async function () {
+      tries++;
+      var h = await refresh();
+      if (h && h.hasToken) {
+        clearInterval(timer);
+        log('✅ 登录成功！token 剩余 ' + h.tokenLeftMin + ' 分钟');
+        btn.disabled = false;
+      } else if (tries > 60) {
+        clearInterval(timer);
+        log('⚠️ 2 分钟内没检测到登录成功。如果窗口已经关了，可以再点一次。');
+        btn.disabled = false;
+      }
+    }, 3000);
+  } catch (e) {
+    log('❌ 请求失败: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+log('控制台已就绪');
+</script>
+</body>
+</html>`;
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+function html(res, code, body) {
+  res.writeHead(code, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
   });
   res.end(body);
 }
@@ -507,6 +814,68 @@ function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+
+  // ── 本地网页控制台：浏览器打开 http://127.0.0.1:8790/ 点按钮操作，不用敲命令 ──
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+    return html(res, 200, CONTROL_PANEL_HTML);
+  }
+
+  // 兼容浏览器直接访问（GET 也能触发重新登录；本地服务，CSRF 风险可接受）
+  if (url.pathname === '/relogin' && (req.method === 'GET' || req.method === 'POST')) {
+    log('收到 /relogin，唤起人工登录');
+    try {
+      const r = await manualLogin();
+      if (r === true || typeof r === 'string') {
+        if (req.method === 'GET') {
+          return html(res, 200, '<meta charset="utf-8"><h3>✅ 登录成功</h3><p>窗口可以关掉了。</p><p><a href="/">返回控制台</a></p>');
+        }
+        return json(res, 200, { ok: true, message: '登录成功' });
+      }
+      if (req.method === 'GET') {
+        return html(res, 200, '<meta charset="utf-8"><h3>🪟 浏览器窗口已打开</h3><p>账号密码已填、记住我已勾，请输入验证码并登录。</p><p>后台会一直等你，不用重复操作。</p><p><a href="/">返回控制台</a></p>');
+      }
+      return json(res, 200, {
+        ok: true,
+        pending: true,
+        message: '浏览器窗口已打开（账号密码已填、记住我已勾），请输入验证码并登录。后台会一直等你，不用重复调用。',
+      });
+    } catch (e) {
+      if (req.method === 'GET') {
+        return html(res, 500, `<meta charset="utf-8"><h3>❌ 登录失败</h3><pre>${String(e.message).replace(/[<>&]/g, (m) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[m]))}</pre><p><a href="/">返回控制台</a></p>`);
+      }
+      return json(res, 500, { ok: false, message: e.message });
+    }
+  }
+
+  // 打开浏览器窗口让人自己登录（不自动填表），与 /relogin 的区别见 openBrowserForManual 注释
+  if (url.pathname === '/browser' && (req.method === 'GET' || req.method === 'POST')) {
+    log('收到 /browser，露出浏览器窗口供人工登录');
+    // 不阻塞：启动 Chromium 要 4~5 秒，等它完成再响应会让调用方（curl/浏览器）干等。
+    // 改成「立即回话 + 后台继续启动」，失败了写日志。
+    const started = openBrowserForManual().catch((e) => log('打开浏览器失败:', e.message));
+    const msg = '正在打开浏览器窗口（约 5 秒），请稍等后切到那个窗口。登录完成后点「我已登录，抓取 token」。';
+    if (req.method === 'GET') {
+      return html(res, 200, '<meta charset="utf-8"><meta http-equiv="refresh" content="3; url=/"><h3>🪟 ' + msg + '</h3><p>3 秒后自动返回控制台…</p>');
+    }
+    return json(res, 202, { ok: true, pending: true, message: msg });
+  }
+
+  // 人在窗口里登好了 → 立刻去页面读一次 token（不跳页面、不重登）
+  if (url.pathname === '/token/pickup' && (req.method === 'GET' || req.method === 'POST')) {
+    log('收到 /token/pickup，从当前页面抓取 token');
+    try {
+      const r = await pickupToken();
+      if (req.method === 'GET') {
+        return html(res, r.ok ? 200 : 400,
+          '<meta charset="utf-8"><h3>' + (r.ok ? '✅ ' : '⚠️ ') + String(r.message).replace(/[<>&]/g, (m) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[m])) +
+          '</h3><p><a href="/">返回控制台</a></p>');
+      }
+      return json(res, r.ok ? 200 : 400, r);
+    } catch (e) {
+      log('抓取 token 异常:', e.message);
+      return json(res, 500, { ok: false, message: e.message });
+    }
+  }
 
   if (req.method === 'GET' && url.pathname === '/health') {
     return json(res, 200, {
@@ -525,24 +894,6 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       log('取 token 异常:', e.message);
       return json(res, 500, { token: null, expiresAt: 0, loginRequired: true, message: e.message });
-    }
-  }
-
-  if (req.method === 'POST' && url.pathname === '/relogin') {
-    log('收到 /relogin，唤起人工登录');
-    try {
-      const r = await manualLogin();
-      if (r === true || typeof r === 'string') {
-        return json(res, 200, { ok: true, message: '登录成功' });
-      }
-      // 非阻塞模式：窗口已就绪，后台会一直等
-      return json(res, 200, {
-        ok: true,
-        pending: true,
-        message: '浏览器窗口已打开（账号密码已填、记住我已勾），请输入验证码并登录。后台会一直等你，不用重复调用。',
-      });
-    } catch (e) {
-      return json(res, 500, { ok: false, message: e.message });
     }
   }
 
