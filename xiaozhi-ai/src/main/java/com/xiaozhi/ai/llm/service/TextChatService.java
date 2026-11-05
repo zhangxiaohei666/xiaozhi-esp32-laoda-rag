@@ -6,6 +6,10 @@ import com.xiaozhi.ai.llm.memory.Conversation;
 import com.xiaozhi.ai.llm.memory.ConversationContext;
 import com.xiaozhi.ai.llm.memory.ConversationFactory;
 import com.xiaozhi.ai.llm.memory.MessageTimeMetadata;
+import com.xiaozhi.ai.tool.ToolRegistrationService;
+import com.xiaozhi.ai.tool.ToolsGlobalRegistry;
+import com.xiaozhi.ai.tool.ToolsSessionHolder;
+import com.xiaozhi.ai.tool.session.ToolSession;
 import com.xiaozhi.common.model.ChatToken;
 import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.utils.DateUtils;
@@ -13,12 +17,16 @@ import jakarta.annotation.Resource;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientResponseException;
@@ -57,6 +65,18 @@ public class TextChatService {
      */
     @Resource
     private com.xiaozhi.ai.rag.RetrievalService retrievalService;
+
+    /**
+     * 工具注册协调器。设备链路在 PersonaFactory 里用它把工具注册进会话的 ToolsSessionHolder；
+     * 网页聊天没有设备会话，需要自己造一个"网页版 ToolSession"再走同一套注册流程，
+     * 否则网页端永远调不到图书馆座位查询这类工具。
+     */
+    @Resource
+    private ToolRegistrationService toolRegistrationService;
+
+    /** 全局工具注册表，用来给网页会话建 ToolsSessionHolder */
+    @Resource
+    private ToolsGlobalRegistry toolsGlobalRegistry;
 
     /**
      * 建立按 sessionId 加载历史与摘要的对话（新会话为空，续接会拉到历史）。
@@ -120,7 +140,38 @@ public class TextChatService {
             log.warn("网页聊天 RAG 注入失败，本轮按无参考资料处理: {}", ragError.getMessage());
         }
 
-        Prompt prompt = new Prompt(messages);
+        // ── 工具注册（Function Calling）────────────────────────────────────────
+        // 设备链路在 PersonaFactory 里做这件事：toolRegistrationService.register(设备会话)，
+        // 工具被注册进会话的 ToolsSessionHolder，Persona 再从那里取出来塞进 ChatOptions。
+        // 网页聊天不经过 PersonaFactory，所以历史上网页端调不到任何工具
+        // （问"图书馆还有多少空座位"会答"查不到实时的"）。
+        //
+        // 这里的做法：给网页会话造一个 ToolSession + ToolsSessionHolder，走同一套注册流程。
+        // 关键取舍：
+        //   · DeviceBO 传 null —— ToolsSessionHolder 只是把它存起来，没有任何方法读它
+        //   · getDeviceId() 返回 null —— ChangeRoleFunction 会拿它去 sessionManager 查会话，
+        //     查不到就自己 return null（该工具在网页端自动不注册），不会 NPE
+        //   · 依赖会话状态的方法（addToolCallDetail / sendTextMessage / setToolCalling）做成空实现，
+        //     图书馆座位这类无状态工具用不到它们
+        List<ToolCallback> availableTools = new ArrayList<>();
+        try {
+            availableTools = collectWebChatTools(conversation, role);
+        } catch (Exception toolError) {
+            log.warn("网页聊天工具注册失败，本轮按无工具处理: {}", toolError.getMessage());
+        }
+
+        Prompt prompt;
+        if (availableTools.isEmpty()) {
+            prompt = new Prompt(messages);
+        } else {
+            ChatOptions chatOptions = ToolCallingChatOptions.builder()
+                    .toolCallbacks(availableTools)
+                    .toolContext("conversationTimestamp", userInstant)
+                    .build();
+            prompt = new Prompt(messages, chatOptions);
+            log.debug("网页聊天本轮可用工具 {} 个: {}", availableTools.size(),
+                    availableTools.stream().map(t -> t.getToolDefinition().name()).toList());
+        }
 
         StringBuilder fullResponse = new StringBuilder();
         AtomicBoolean turnCompleted = new AtomicBoolean(false);
@@ -221,5 +272,120 @@ public class TextChatService {
         return trimmed.length() <= MAX_FAILURE_REASON_LENGTH
                 ? trimmed
                 : trimmed.substring(0, MAX_FAILURE_REASON_LENGTH) + "…";
+    }
+
+    // ========================================================================
+    // 工具支持：给网页聊天造一个 ToolSession，走与设备链路相同的注册流程
+    // ========================================================================
+
+    /**
+     * 收集本轮网页聊天可用的工具。
+     *
+     * <p>流程与设备链路一致（{@code PersonaFactory} 里的做法）：
+     * <ol>
+     *   <li>建一个 {@link ToolsSessionHolder}（工具最终落在这里）</li>
+     *   <li>建一个 {@link ToolSession} 包住它</li>
+     *   <li>调 {@link ToolRegistrationService#register} 让各个 registrar 去填</li>
+     *   <li>从 holder 取出来</li>
+     * </ol>
+     *
+     * <p>为什么不直接调 {@code toolsGlobalRegistry.getAllFunctions(...)}：
+     * 那个方法内部是 {@code forEach} 且没有 try-catch，任何一个工具在
+     * {@code getFunctionCallTool} 里抛异常都会让整批工具注册失败。
+     * 走 {@code ToolRegistrationService} 的话，每个 registrar 的失败都被独立 catch，
+     * 能拿到"能注册的那部分"。
+     */
+    private List<ToolCallback> collectWebChatTools(Conversation conversation, RoleBO role) {
+        if (toolRegistrationService == null || toolsGlobalRegistry == null) {
+            return new ArrayList<>();
+        }
+        String sessionId = conversation.getSessionId();
+        Integer roleId = role != null ? role.getRoleId() : conversation.getRoleId();
+
+        // DeviceBO 传 null：ToolsSessionHolder 只是把它存起来，没有任何方法读
+        ToolsSessionHolder holder = new ToolsSessionHolder(sessionId, null, toolsGlobalRegistry);
+        ToolSession webChatSession = new WebChatToolSession(sessionId, roleId, holder);
+
+        toolRegistrationService.register(webChatSession);
+        return holder.getAllFunction();
+    }
+
+    /**
+     * 网页聊天场景的 {@link ToolSession} 实现。
+     *
+     * <p>设备链路里的实现（{@code ChatSessionToolAdapter}）背后有一整套 WebSocket 会话、
+     * 播放器状态、设备 MCP 通道；网页聊天这些都没有，所以：
+     * <ul>
+     *   <li>{@code getDeviceId()} 返回 {@code null} —— 依赖设备身份的工具
+     *       （如换角色）在查不到会话时会自己 return null，等于自动不注册，不会抛异常</li>
+     *   <li>与会话副作用相关的方法全部空实现 —— 网页聊天的工具调用结果直接随流返回，
+     *       不需要写回会话历史或播放器</li>
+     * </ul>
+     */
+    private static final class WebChatToolSession implements ToolSession {
+
+        private final String sessionId;
+        private final Integer roleId;
+        private final ToolsSessionHolder holder;
+
+        private WebChatToolSession(String sessionId, Integer roleId, ToolsSessionHolder holder) {
+            this.sessionId = sessionId;
+            this.roleId = roleId;
+            this.holder = holder;
+        }
+
+        @Override
+        public String getSessionId() {
+            return sessionId;
+        }
+
+        @Override
+        public Integer getRoleId() {
+            return roleId;
+        }
+
+        @Override
+        public String getDeviceId() {
+            // 网页聊天没有设备。依赖设备身份的工具会因此自动跳过
+            return null;
+        }
+
+        @Override
+        public ToolsSessionHolder getToolsSessionHolder() {
+            return holder;
+        }
+
+        @Override
+        public boolean isDeviceMcpInitialized() {
+            // 网页聊天不连设备 MCP
+            return false;
+        }
+
+        @Override
+        public void addToolCallDetail(Long turnId, String name, String args, String result) {
+            // 网页聊天的工具调用记录随流式响应返回，不写回会话
+        }
+
+        @Override
+        public void addToolCallMessages(Long turnId,
+                                        AssistantMessage toolCallAssistantMessage,
+                                        ToolResponseMessage toolResponseMessage) {
+            // 同上：不注入会话历史
+        }
+
+        @Override
+        public void sendTextMessage(String message) {
+            // 网页没有独立文本通道
+        }
+
+        @Override
+        public boolean isOpen() {
+            return true;
+        }
+
+        @Override
+        public void setToolCalling(boolean calling) {
+            // 网页没有播放器，不需要防止提前 sendStop
+        }
     }
 }

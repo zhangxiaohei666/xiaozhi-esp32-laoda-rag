@@ -1,4 +1,4 @@
-package com.xiaozhi.dialogue.library;
+package com.xiaozhi.ai.library;
 
 /**
  * 图书馆数据不可用。

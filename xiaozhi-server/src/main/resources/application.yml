@@ -75,6 +75,25 @@ xiaozhi:
     # 真正做识别的是 dialogue 进程，那边用 application-common.yml 的默认值 true。
     local-enabled: ${XIAOZHI_STT_LOCAL_ENABLED:false}
 
+  # 图书馆座位查询（token 来自侧车）
+  #
+  # 为什么 server 进程也要这一段（2026-11-05 补）：
+  #   LibrarySeatOverviewFunction / LibraryAreaSeatsFunction 上有
+  #   @ConditionalOnProperty(name = "xiaozhi.library.enabled", havingValue = "true")，
+  #   而这两个工具网页聊天（server 进程）也要用。
+  #   此前只有 dialogue 的 application.yml 有这段映射，server 这边取默认 false、
+  #   工具 bean 根本不创建，导致同一个问题「图书馆还有多少空座位」
+  #   在 ESP32 上答得出、在网页聊天里答"查不到实时的"。
+  #
+  # 两个进程需要的能力其实一样：注册工具 + 调侧车拿 token + 直连学校 API。
+  # 所以两边配置必须一致，不能只给 dialogue。
+  library:
+    enabled: ${LIBRARY_ENABLED:false}
+    sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}
+    base-url: ${LIBRARY_BASE_URL:https://zwyy.nyist.edu.cn}
+    timeout-ms: ${LIBRARY_TIMEOUT_MS:5000}
+    token-timeout-ms: ${LIBRARY_TOKEN_TIMEOUT_MS:3000}
+
 # ============================================================
 # SpringDoc OpenAPI 配置
 # ============================================================

@@ -1,4 +1,4 @@
-package com.xiaozhi.dialogue.library;
+package com.xiaozhi.ai.library;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;

@@ -1,4 +1,4 @@
-package com.xiaozhi.dialogue.library;
+package com.xiaozhi.ai.library;
 
 import com.xiaozhi.ai.tool.ToolsGlobalRegistry;
 import com.xiaozhi.ai.tool.session.ToolSession;

@@ -1,4 +1,4 @@
-package com.xiaozhi.dialogue.library;
+package com.xiaozhi.ai.library;
 
 import com.xiaozhi.utils.DateUtils;
 import com.fasterxml.jackson.databind.JsonNode;
