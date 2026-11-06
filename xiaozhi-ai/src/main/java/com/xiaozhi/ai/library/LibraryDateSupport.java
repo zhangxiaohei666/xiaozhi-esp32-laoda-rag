@@ -31,7 +31,7 @@ final class LibraryDateSupport {
         LocalDate today = DateUtils.today();
         String t = text == null ? "" : text.trim();
 
-        if (t.isEmpty() || t.contains("今天") || t.contains("今日") || t.contains("今日")
+        if (t.isEmpty() || t.contains("今天") || t.contains("今日")
                 || t.equals("当天") || t.contains("现在")) {
             return new Parsed(today.format(ISO), "今天");
         }

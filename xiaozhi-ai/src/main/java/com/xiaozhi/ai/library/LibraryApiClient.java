@@ -93,10 +93,27 @@ public class LibraryApiClient {
      */
     private static final long OVERVIEW_CACHE_MS = 30_000L;
 
-    /** 按 date 缓存最近一次 Overview；两个字段必须一起读，所以用 volatile + 单写者模式 */
-    private volatile Overview cachedOverview;
-    private volatile String cachedOverviewDate;
-    private volatile long cachedOverviewAt;
+    /**
+     * 缓存项：date / at / overview 必须作为一个整体读写。
+     *
+     * <p>2026-11-06 修 P-02：最初写成三个独立 {@code volatile} 字段
+     * （{@code cachedOverview} / {@code cachedOverviewDate} / {@code cachedOverviewAt}），
+     * 注释还写着「单写者模式」—— 但工具执行在虚拟线程上，并发量在 F-12 之后反而更高，
+     * 不是单写者。三个字段分三次写、读时分三次取，存在这样的交错：
+     * <pre>
+     * A 线程查「明天」：cachedOverview = 明天的结果  （还没写 date，仍是「今天」）
+     * B 线程查「今天」：读到新 overview（明天数据）+ 旧 date（匹配「今天」）+ 旧 at（未过期）
+     *                  → 把明天的座位数当成今天的返回
+     * </pre>
+     * 窗口很小，但方向恰好是「给出错误日期的实时数字」，正是这个工具最不该错的。
+     *
+     * <p>合成一个不可变 record 后，一次赋值 = 一次发布，
+     * 读到的要么是旧的完整三元组，要么是新的完整三元组，不会半新半旧。
+     */
+    private record OverviewCache(String date, long at, Overview overview) {}
+
+    /** 最近一次非空的 Overview 缓存；整条替换，不做字段级更新 */
+    private volatile OverviewCache overviewCache;
 
     /**
      * 查总览。
@@ -105,10 +122,10 @@ public class LibraryApiClient {
      */
     public Overview pick(String date) {
         long now = DateUtils.millis();
-        Overview cached = cachedOverview;
-        if (cached != null && date != null && date.equals(cachedOverviewDate)
-                && now - cachedOverviewAt < OVERVIEW_CACHE_MS) {
-            return cached;
+        OverviewCache cached = overviewCache;
+        if (cached != null && date != null && date.equals(cached.date())
+                && now - cached.at() < OVERVIEW_CACHE_MS) {
+            return cached.overview();
         }
 
         Overview result = fetchOverview(date);
@@ -116,9 +133,7 @@ public class LibraryApiClient {
         // 只在拿到非空结果时写缓存：空结果不缓存（与 LibraryAreaResolver 的 F-07 修复一致），
         // 否则闭馆后的一次查询会把「全空」固化成 30 秒的事实。
         if (result != null && (!result.storeys().isEmpty() || !result.areas().isEmpty())) {
-            cachedOverview = result;
-            cachedOverviewDate = date;
-            cachedOverviewAt = now;
+            overviewCache = new OverviewCache(date, now, result);
         }
         return result;
     }

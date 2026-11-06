@@ -102,12 +102,18 @@ public class RetrievalService {
      * 实测 {@code 12-图书馆-楼层与区域分布.md} 里有 6 处这种行，
      * 而它正是评估集 E04「图书馆都有哪些楼层」的期望文档 —— 垃圾文本真实进了 system 消息。
      *
-     * <p>为什么不用更宽的正则：必须同时满足「整行只由 | - : 和空格组成」且「首尾都有 |」，
+     * <p>为什么不用更宽的正则：必须满足「整行只由 | - : 和空格组成」，且**至少各有一个 | 和一个 -**，
      * 否则 {@code | 楼层 | 区域 |} 这种正常表头（含中文）也会被误删。
      * 行内只用 {@code [ \t]} 不用 {@code \s} —— 后者含换行，{@code (?m)} 下可能跨行吃掉内容。
+     *
+     * <p>2026-11-06 修 P-04：原写法 {@code ^[ \t]*\|[ \t:|-]*\|[ \t]*$} 要求**首尾都有竖线**，
+     * 而 GFM 允许省略尾竖线（{@code |---|---}）甚至首尾都省（{@code ---|---}），
+     * 这类写法会漏网。现改为两条 lookahead：一条断言「至少有一个 |」，一条断言「至少有一个 -」，
+     * 然后整行只允许这些字符。这样三种写法都覆盖，又不会误吃纯 {@code ---}（那交给 HR_PATTERN）。
+     * 实测 10 个用例全过（标准写法、省略尾、首尾都省、带对齐冒号、带空格、以及 5 个不该匹配的）。
      */
     private static final java.util.regex.Pattern TABLE_SEPARATOR_PATTERN =
-            java.util.regex.Pattern.compile("(?m)^[ \\t]*\\|[ \\t:|-]*\\|[ \\t]*$");
+            java.util.regex.Pattern.compile("(?m)^(?=[ \\t:|-]*\\|)(?=[ \\t:|-]*-)[ \\t:|-]+$");
 
     private final QdrantRagService ragService;
     private final int topK;

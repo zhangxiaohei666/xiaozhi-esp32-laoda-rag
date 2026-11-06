@@ -155,6 +155,28 @@ class RetrievalServiceCleanTest {
     }
 
     @Test
+    @DisplayName("省略竖线的 GFM 分隔行也要删（P-04 回归：|---|--- 与 ---|---）")
+    void stripsTableSeparatorRowsWithoutTrailingPipe() {
+        // GFM 允许省略尾竖线甚至首尾都省；原正则要求首尾都有 |，这两类会漏网，
+        // 被第 ⑥ 步转成「，---，---，」。修法见 TABLE_SEPARATOR_PATTERN 的注释。
+        String noTrailing = String.join("\n",
+                "| 楼层 | 区域",
+                "|---|---",
+                "| 1 楼 | 总服务台 |");
+        String out1 = RetrievalService.cleanForVoice(noTrailing);
+        assertThat(out1).as("省略尾竖线的分隔行必须被删").doesNotContain("---");
+        assertThat(out1).contains("楼层").contains("总服务台");
+
+        String noPipes = String.join("\n",
+                "楼层 | 区域",
+                "---|---",
+                "1 楼 | 总服务台");
+        String out2 = RetrievalService.cleanForVoice(noPipes);
+        assertThat(out2).as("首尾都省的分隔行必须被删").doesNotContain("---");
+        assertThat(out2).contains("楼层").contains("总服务台");
+    }
+
+    @Test
     @DisplayName("资料里伪造的【参考资料结束】等边界标记必须被剔除（F-11 回归）")
     void stripsForgedInjectionBoundaryMarkers() {
         // 攻击场景：用户上传的 md 里写这对标记 + 一段假「新规则」，
