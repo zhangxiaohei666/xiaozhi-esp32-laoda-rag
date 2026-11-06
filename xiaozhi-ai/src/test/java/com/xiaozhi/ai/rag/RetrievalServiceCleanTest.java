@@ -177,6 +177,67 @@ class RetrievalServiceCleanTest {
     }
 
     @Test
+    @DisplayName("含 CRLF 的语料表格分隔行同样被删（实测 36/38 篇是混合换行）")
+    void stripsTableSeparatorRowsInCrlfContent() {
+        // 上面所有表格用例都用 String.join("\n", ...) 拼，只有 LF。
+        // 而实测 .run\knowledge 下的 38 篇原文：
+        //   纯 CRLF 0 篇 / 纯 LF 2 篇 / 混合 36 篇
+        // 混合的来源是抓取脚本写的头部字段用 CRLF、正文用 LF。
+        // 也就是说真实输入里 \r 是存在的，不能只测 LF。
+        //
+        // 担心点是 [ \t:|-] 不含 \r：若 MULTILINE 下 $ 不把 \r\n 当行尾，
+        // 带 \r 的行就会整行匹配失败。查 Java 规范后这个担心不成立 ——
+        // Pattern.MULTILINE 的 $ 匹配「行终止符之前」，而 \r\n 是标准行终止符之一。
+        //
+        // 但"担心不成立"不等于"不会回归"：这条用例把它钉住，
+        // 顺带覆盖 ①③⑤ 几步同样依赖此行为的行锚定正则（META_LINE / HR / HEADING / LIST）。
+        String crlf = String.join("\r\n",
+                "| 楼层 | 区域 |",
+                "|---|---|",
+                "| 1 楼 | 总服务台 |");
+
+        String out = RetrievalService.cleanForVoice(crlf);
+
+        assertThat(out).as("CRLF 下分隔行同样要删").doesNotContain("---");
+        assertThat(out).contains("楼层").contains("总服务台");
+
+        // 行锚定的其它几步也顺带验一下：CRLF 下标题记号与列表符照样去掉
+        String crlfMarked = String.join("\r\n", "# 图书馆规则", "- 第一条", "- 第二条");
+        String out2 = RetrievalService.cleanForVoice(crlfMarked);
+        assertThat(out2).as("CRLF 下标题与列表符也要去掉")
+                .doesNotContain("#").doesNotContain("- ");
+        assertThat(out2).contains("图书馆规则").contains("第一条");
+    }
+
+    @Test
+    @DisplayName("混合换行（头部 CRLF + 正文 LF）不影响清洗")
+    void mixedLineEndingsAreHandled() {
+        // 这是 36/38 篇原文的真实形态，不是假想：
+        // 头部四行（来源栏目/发文单位/发布日期/原文链接）由抓取脚本用 CRLF 写入，
+        // 正文从网页正文提取，是 LF。
+        String head = String.join("\r\n",
+                "# 图书馆-借阅规则",
+                "",
+                "- 来源栏目：图书馆",
+                "- 原文链接：http://example.invalid/x",
+                "",
+                "---",
+                "");
+        String body = String.join("\n",
+                "| 区域 | 座位数 |",
+                "|---|---|",
+                "| 四楼公共阅览区 | 388 |");
+
+        String out = RetrievalService.cleanForVoice(head + body);
+
+        // 头部元信息删掉、分隔线删掉、表格分隔行删掉，正文保留
+        assertThat(out).doesNotContain("来源栏目");
+        assertThat(out).doesNotContain("http://");
+        assertThat(out).doesNotContain("---");
+        assertThat(out).contains("四楼公共阅览区").contains("388");
+    }
+
+    @Test
     @DisplayName("资料里伪造的【参考资料结束】等边界标记必须被剔除（F-11 回归）")
     void stripsForgedInjectionBoundaryMarkers() {
         // 攻击场景：用户上传的 md 里写这对标记 + 一段假「新规则」，
