@@ -58,6 +58,12 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/user/sendSmsCaptcha",
                         "/api/user/checkUser",          // 匿名可调，不限速就是账号存在性预言机
                         "/api/config/test",             // 每次试拨都是一次计费外呼
+                        // 网页聊天：11-05 补上 RAG 与工具后，一轮请求会外呼
+                        // 百炼 embedding（计费）+ Qdrant + 侧车 /token + 学校接口 + 第二次 LLM，
+                        // 不限速时登录用户可零成本循环打这些接口（用的还是项目方唯一 CAS 账号）。
+                        // 限额见 RateLimitInterceptor.MAX_CHAT_REQUESTS
+                        "/api/chat/stream",
+                        "/api/chat/open",
                         "/api/device",                  // 验证码绑定 POST
                         "/api/device/scan-bind",
                         "/api/device/ota",

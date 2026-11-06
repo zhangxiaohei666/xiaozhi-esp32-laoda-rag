@@ -103,6 +103,56 @@ class RateLimitInterceptorTest {
             new MockHttpServletResponse(), HANDLER)).isFalse();
     }
 
+    /**
+     * 网页聊天必须限流（2026-11-06 修 F-12 的回归）。
+     *
+     * <p>背景：11-05 网页聊天补上 RAG 与工具后，一轮请求会外呼
+     * 百炼 embedding（计费）+ Qdrant + 侧车 /token + 学校接口 + 第二次 LLM。
+     * 而 /api/chat/** 之前完全不在限流清单里，登录用户循环提问就能零成本打这些接口，
+     * 用的还是项目方唯一的 CAS 账号。
+     *
+     * <p>这条测试同时钉住两件事：① 额度是 20（不是登录的 10）；
+     * ② /api/chat/stream 真的走到了限流，不会因为路径没注册而静默放行。
+     */
+    @Test
+    void limitsChatStreamEndpointToItsOwnQuota() throws Exception {
+        givenRedisCounters();
+        givenClientIp("10.0.0.7");
+
+        // 前 20 次放行
+        for (int i = 0; i < 20; i++) {
+            assertThat(rateLimitInterceptor.preHandle(postRequest("/api/chat/stream"),
+                new MockHttpServletResponse(), HANDLER))
+                .as("第 %d 次聊天请求应放行（额度 20）", i + 1)
+                .isTrue();
+        }
+
+        // 第 21 次拒绝
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        assertThat(rateLimitInterceptor.preHandle(postRequest("/api/chat/stream"), response, HANDLER)).isFalse();
+        assertThat(response.getStatus()).isEqualTo(429);
+        assertThat(response.getContentAsString()).contains("请求过于频繁");
+    }
+
+    /** 聊天与登录的额度互不干扰（各自独立计数） */
+    @Test
+    void chatQuotaIsIndependentFromLoginQuota() throws Exception {
+        givenRedisCounters();
+        givenClientIp("10.0.0.7");
+
+        // 先把登录额度用光
+        for (int i = 0; i < 10; i++) {
+            rateLimitInterceptor.preHandle(postRequest(LOGIN_PATH), new MockHttpServletResponse(), HANDLER);
+        }
+        assertThat(rateLimitInterceptor.preHandle(postRequest(LOGIN_PATH), new MockHttpServletResponse(), HANDLER))
+            .as("登录额度已耗尽").isFalse();
+
+        // 聊天不受影响
+        assertThat(rateLimitInterceptor.preHandle(postRequest("/api/chat/stream"),
+            new MockHttpServletResponse(), HANDLER))
+            .as("聊天是独立计数器，不应被登录额度连带").isTrue();
+    }
+
     /** 换 IP 换不掉账号维度的计数，且手机号/邮箱不能进 Redis key */
     @Test
     void countsAccountAcrossChangingIpsAndKeepsOnlyItsDigest() throws Exception {

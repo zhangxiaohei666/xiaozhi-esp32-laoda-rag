@@ -80,6 +80,20 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     /** 配置试拨：每次都是一次计费外呼，按人来回改参数试的节奏留量 */
     private static final int MAX_CONFIG_TEST_REQUESTS = 20;
 
+    /**
+     * 网页聊天：每分钟最多 20 次（2026-11-06 修 F-12）。
+     *
+     * <p>为什么要限：11-05 网页聊天补上 RAG 和工具之后，一轮请求会外呼
+     * 百炼 embedding（计费）→ Qdrant → 侧车 /token → 学校 /v4/space/pick → 第二次 LLM。
+     * 而 /api/chat/** 原先不在限流清单里，一个登录用户循环提问就能零成本高频打这些接口，
+     * 用的还是项目方唯一的 CAS 账号（封号与风控风险由项目方承担）。
+     *
+     * <p>为什么定 20：正常使用 1 分钟问 5~10 个问题已经很密；
+     * 工具调用的多轮往返走的是模型内部循环，不额外产生 HTTP 请求，
+     * 所以 20 次足够正常用，又能挡住脚本循环。
+     */
+    private static final int MAX_CHAT_REQUESTS = 20;
+
     /** OTA 端点按设备计数：设备每次开机只需请求一次，留 10 倍余量 */
     private static final int MAX_OTA_DEVICE_REQUESTS = 10;
 
@@ -178,6 +192,10 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private static int maxRequestsOf(String uri) {
         if (uri.contains("Captcha")) {
             return MAX_CAPTCHA_REQUESTS;
+        }
+        // 聊天端点放在 /api/device、/api/config 之后判，避免前缀误伤
+        if (uri.startsWith("/api/chat")) {
+            return MAX_CHAT_REQUESTS;
         }
         if (uri.startsWith("/api/device")) {
             return MAX_BIND_REQUESTS;
