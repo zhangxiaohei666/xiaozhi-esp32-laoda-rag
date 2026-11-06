@@ -112,6 +112,49 @@ class RetrievalServiceCleanTest {
     }
 
     @Test
+    @DisplayName("表格分隔行被整行删除，不再念成「，---，---，」（F-06 回归）")
+    void stripsTableSeparatorRows() {
+        // 实测 12-图书馆-楼层与区域分布.md 里就是这种结构：
+        //   | 楼层 | 区域 |
+        //   |---|---|          ← 分隔行，原来会被第 ⑥ 步转成「，---，---，」
+        //   | 1 楼 | 总服务台 |
+        String input = String.join("\n",
+                "| 楼层 | 区域 |",
+                "|---|---|",
+                "| 1 楼 | 总服务台 |");
+
+        String out = RetrievalService.cleanForVoice(input);
+
+        // 分隔行的破折号必须完全消失
+        assertThat(out).doesNotContain("---");
+        assertThat(out).doesNotContain("-");
+        // 但正常表头和数据行仍要保留
+        assertThat(out).contains("楼层").contains("总服务台");
+
+        // 带对齐冒号的变体也要删
+        String aligned = String.join("\n",
+                "| 区域 | 座位数 |",
+                "|:---|---:|",
+                "| 四楼公共阅览区 | 388 |");
+        String out2 = RetrievalService.cleanForVoice(aligned);
+        assertThat(out2).doesNotContain("---").doesNotContain(":-");
+        assertThat(out2).contains("四楼公共阅览区").contains("388");
+    }
+
+    @Test
+    @DisplayName("表格分隔行正则不误删正常表头（含中文/数字的行必须保留）")
+    void tableSeparatorPatternDoesNotEatRealContent() {
+        String input = String.join("\n",
+                "| 楼层 | 区域 |",
+                "| 1 楼 | 总服务台 |");
+
+        String out = RetrievalService.cleanForVoice(input);
+
+        assertThat(out).contains("楼层").contains("总服务台");
+        assertThat(out).contains("1");
+    }
+
+    @Test
     @DisplayName("压缩多余空白与空行")
     void collapsesWhitespace() {
         String input = "第一行   \n\n\n\n第二行";

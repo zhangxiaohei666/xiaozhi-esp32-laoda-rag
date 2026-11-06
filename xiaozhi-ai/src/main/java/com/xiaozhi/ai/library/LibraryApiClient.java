@@ -158,9 +158,17 @@ public class LibraryApiClient {
             try {
                 return postOnce(path, body);
             } catch (LibraryUnavailableException e) {
-                // 登录类错误不用重试，重试也一样
-                if (e.getMessage() != null && e.getMessage().contains("登录")) {
+                boolean isLoginError = e.getMessage() != null && e.getMessage().contains("登录");
+                // 登录类错误（2026-11-06 修 F-08）：
+                //   第一次遇到 → postOnce 里已经 tokenProvider.invalidate()，
+                //   再试一次就能拿到侧车刚换好的新 token，所以要继续循环；
+                //   第二次还是登录错误 → 说明侧车那边也确实没登录（要去人工过验证码），
+                //   这时候才直接抛，不要拿同一个错误反复打学校接口。
+                if (isLoginError && attempt > 0) {
                     throw e;
+                }
+                if (isLoginError) {
+                    log.debug("图书馆接口 {} 返回登录错误，本地 token 已失效，重试一次", path);
                 }
                 last = e;
             } catch (Exception e) {
@@ -197,8 +205,9 @@ public class LibraryApiClient {
         int code = root.path("code").asInt(-1);
         if (code != 0) {
             String msg = text(root, "message");
-            // 未登录：让用户知道要重新登录，而不是笼统的"查不到"
+            // 未登录：先让本地 token 缓存失效，再由外层重试拿新 token（F-08）
             if (msg != null && msg.contains("NO_LOGIN")) {
+                tokenProvider.invalidate();
                 throw new LibraryUnavailableException("图书馆系统需要重新登录");
             }
             throw new LibraryUnavailableException("图书馆系统返回错误：" + (msg == null ? "未知原因" : msg));

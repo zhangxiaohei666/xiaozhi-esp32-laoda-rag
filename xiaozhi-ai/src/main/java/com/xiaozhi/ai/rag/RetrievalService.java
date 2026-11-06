@@ -74,6 +74,21 @@ public class RetrievalService {
     private static final java.util.regex.Pattern META_LINE_PATTERN =
             java.util.regex.Pattern.compile("(?m)^\\s*-\\s*(来源栏目|发文单位|发布日期|原文链接|来源)\\s*[:：].*$");
 
+    /**
+     * markdown 表格分隔行：{@code |---|---|}、{@code |:---|:---:|---:|}、{@code | --- | --- |}。
+     *
+     * <p>为什么需要单独一条（2026-11-06 修 F-06）：
+     * 第 ⑥ 步只做 {@code replace('|','，')}，分隔行会被念成「，---，---，」。
+     * 实测 {@code 12-图书馆-楼层与区域分布.md} 里有 6 处这种行，
+     * 而它正是评估集 E04「图书馆都有哪些楼层」的期望文档 —— 垃圾文本真实进了 system 消息。
+     *
+     * <p>为什么不用更宽的正则：必须同时满足「整行只由 | - : 和空格组成」且「首尾都有 |」，
+     * 否则 {@code | 楼层 | 区域 |} 这种正常表头（含中文）也会被误删。
+     * 行内只用 {@code [ \t]} 不用 {@code \s} —— 后者含换行，{@code (?m)} 下可能跨行吃掉内容。
+     */
+    private static final java.util.regex.Pattern TABLE_SEPARATOR_PATTERN =
+            java.util.regex.Pattern.compile("(?m)^[ \\t]*\\|[ \\t:|-]*\\|[ \\t]*$");
+
     private final QdrantRagService ragService;
     private final int topK;
     private final double threshold;
@@ -420,6 +435,9 @@ public class RetrievalService {
 
         // ⑤ markdown 列表符
         s = LIST_PATTERN.matcher(s).replaceAll("");
+
+        // ⑤.5 markdown 表格分隔行（必须早于 ⑥，否则会被转成「，---，---，」念出来）
+        s = TABLE_SEPARATOR_PATTERN.matcher(s).replaceAll("");
 
         // ⑥ 表格竖线转逗号（保留内容，念出来是停顿）
         s = s.replace('|', '，');

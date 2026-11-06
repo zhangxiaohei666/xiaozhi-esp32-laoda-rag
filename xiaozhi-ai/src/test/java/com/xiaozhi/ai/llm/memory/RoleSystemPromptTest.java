@@ -21,7 +21,12 @@ class RoleSystemPromptTest {
 
         assertThat(text).startsWith("角色设定：" + System.lineSeparator() + "你是小智，一个爱讲冷笑话的助手。");
         assertThat(text).contains("当前位置：北京市海淀区。");
-        assertThat(text).endsWith("以用户说的为准。");
+        // 位置行的收尾句仍在（原来这里用 endsWith，
+        // 但 63005ee 在 system prompt 末尾追加了「当前日期」行，它不是最后一句了）。
+        assertThat(text).contains("以用户说的为准。");
+        // 追加的日期行也要在，且必须排在位置行之后
+        assertThat(text).contains("当前日期：");
+        assertThat(text.indexOf("当前位置：")).isLessThan(text.indexOf("当前日期："));
     }
 
     @Test

@@ -60,8 +60,17 @@ public class TextChatService {
     private ConversationFactory conversationFactory;
 
     /**
-     * RAG 检索服务。{@code required = false}：知识库未启用（未配 Qdrant / embedding）时
-     * 这个 bean 不存在，网页聊天仍要能正常工作。
+     * RAG 检索服务。
+     *
+     * <p>注意：{@code @Resource} 没有 {@code required = false} 这个属性（那是 {@code @Autowired} 的）。
+     * 这里能注入是因为 {@code RetrievalService} 是无条件 {@code @Component}
+     * （QdrantRagService 也全是懒加载，未配 Qdrant 时不会在启动期报错）。
+     * 下面的 {@code != null} 判空只是为了单测（{@code @InjectMocks} 塞 null）能跑过，
+     * 生产环境恒真。
+     *
+     * <p>2026-11-06 修 F-19：原注释写成 {@code required = false} 会误导排查方向 ——
+     * 将来若真给 QdrantRagService 加 {@code @ConditionalOnProperty}，
+     * {@code @Resource} 会启动失败而不是优雅降级。
      */
     @Resource
     private com.xiaozhi.ai.rag.RetrievalService retrievalService;

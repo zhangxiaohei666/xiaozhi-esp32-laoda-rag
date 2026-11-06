@@ -183,6 +183,17 @@ public class LibraryAreaResolver {
             }
             sb.append(floor).append("：").append(String.join("、", dedup(names)));
         });
+
+        // ⚠️ 空目录要给兜底文案（2026-11-06 修 F-27）。
+        //
+        // 两个 Function 在 matched=false 时都拼：
+        //   "没找到「X」这个区域。图书馆的楼层和区域是这些——" + hint
+        // 若 hint 是空串，句子直接断在破折号上。
+        // 闭馆后 API 返回空目录（F-07 同类根因）就会走到这里，
+        // 而此时真实原因不是"用户说错了区域名"，而是"目录取不到"。
+        if (sb.isEmpty()) {
+            return "（区域目录这会儿取不到，多半是当天已闭馆，稍后再问一次）";
+        }
         return sb.toString();
     }
 
@@ -205,6 +216,23 @@ public class LibraryAreaResolver {
             }
             LibraryApiClient.Overview ov = apiClient.pick(today);
             Snapshot fresh = new Snapshot(ov.storeys(), ov.areas());
+
+            // ⚠️ 空目录不写缓存（2026-11-06 修 F-07）。
+            //
+            // 背景：22:00 闭馆后 LibraryApiClient.pick() 对「今天」返回全空
+            // （实测 date=今天 → 115 字节 storey=0；date=明天 → 26756 字节 storey=5），
+            // 这个空结果原来会被缓存 60 分钟。后果是一旦有人闭馆后问过一次
+            // 「今天三楼还有位置吗」，接下来一小时内所有人问「明天英语角哪些座位空着」
+            // 都会命中这份空目录 → 报「没找到『英语角』这个区域」，完全误导方向。
+            //
+            // 为什么不缓存但仍然返回：调用方需要知道「这次就是空的」，
+            // 好走它自己的兜底文案；只是不把空结果固化成后续 60 分钟的事实。
+            boolean empty = fresh.storeys().isEmpty() && fresh.areas().isEmpty();
+            if (empty) {
+                log.debug("图书馆目录为空（多半是当天已闭馆），本次不写入缓存");
+                return fresh;
+            }
+
             snapshot = fresh;
             snapshotAt = DateUtils.millis();
             log.debug("图书馆目录已刷新：{} 个楼层，{} 个区域", fresh.storeys().size(), fresh.areas().size());

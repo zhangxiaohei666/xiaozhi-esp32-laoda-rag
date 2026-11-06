@@ -62,6 +62,28 @@ public class LibraryTokenProvider {
         return refresh();
     }
 
+    /**
+     * 立即作废当前缓存的 token，下次 {@link #token()} 会强制向侧车重新取。
+     *
+     * <p>为什么需要（2026-11-06 修 F-08）：
+     * 侧车在 token 剩 10 分钟时就会换新（{@code RENEW_BEFORE_MS}），
+     * 而这里 {@code tokenValidUntil = expiresAt - 2 分钟}，仍会继续用【旧 token】约 8 分钟。
+     * 学校接口对旧 token 返回 {@code NO_LOGIN}，原来只抛异常、不失效本地缓存，
+     * 于是这 8 分钟里每一次座位查询都失败，文案是「图书馆系统需要重新登录」,
+     * 运维会去点控制台做无用功 —— 其实侧车那边早就换好了。
+     *
+     * <p>现在由 {@code LibraryApiClient} 在收到 NO_LOGIN 时调用本方法，
+     * 让它的重试循环重新取一次（此时会拿到侧车的新 token）。
+     */
+    public void invalidate() {
+        String old = token;
+        token = null;
+        tokenValidUntil = 0L;
+        if (old != null) {
+            log.debug("图书馆 token 已失效，下次取用会重新向侧车申请");
+        }
+    }
+
     private synchronized String refresh() {
         // 双检：并发的第二个线程可能已经刷新完了
         long now = DateUtils.millis();
