@@ -45,7 +45,8 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
             description = "查询图书馆座位的实时总体情况：全馆座位总数与当前空闲数、各楼层的空闲数、各区域的空闲数。"
                     + "当用户问到「图书馆现在人多吗」「还有没有位置」「还剩多少座位」「三楼人多不多」"
                     + "「哪个区域最空」「今天/明天好不好约」这类【问数量、问整体】的问题时，调用本工具。"
-                    + "座位数据是实时变化的，每轮对话都要重新查，不要复用上一轮的结果。"
+                    + "座位数据是实时变化的，但同一轮里不要为了「确认一下」立刻重复调用同一个楼层和日期："
+                    + "服务端有 30 秒短缓存，重复调用拿到的还是同一份数字。"
                     + "如果用户问的是「具体哪几个座位空着」，改用 library_area_seats。",
             returnDirect = false)
     public String overview(

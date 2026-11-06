@@ -2,6 +2,7 @@ package com.xiaozhi.ai.library;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xiaozhi.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -79,11 +80,50 @@ public class LibraryApiClient {
     // ==================== 接口 ====================
 
     /**
+     * 总览结果的短缓存时长（2026-11-06 修 F-12 后半）。
+     *
+     * <p>为什么要缓存：网页聊天一轮请求可能连调两次 pick（先 resolve 区域再取总览），
+     * 而工具描述原来还写着「每轮对话都要重新查，不要复用上一轮的结果」。
+     * 一个用户连问几句「三楼还有位置吗」「四楼呢」就是连续三次打学校接口，
+     * 用的是项目方唯一的 CAS 账号。
+     *
+     * <p>为什么是 30 秒而不是更长：座位数是会变的，30 秒内的缓存对「还剩多少座位」
+     * 这个问题来说仍然是实时的；再长就会让人看到明显过期的数字。
+     * 而且失效是惰性的（下次查询时判断），没有后台线程。
+     */
+    private static final long OVERVIEW_CACHE_MS = 30_000L;
+
+    /** 按 date 缓存最近一次 Overview；两个字段必须一起读，所以用 volatile + 单写者模式 */
+    private volatile Overview cachedOverview;
+    private volatile String cachedOverviewDate;
+    private volatile long cachedOverviewAt;
+
+    /**
      * 查总览。
      *
      * @param date yyyy-MM-dd，必须是系统支持的日期（一般只有今天和明天）
      */
     public Overview pick(String date) {
+        long now = DateUtils.millis();
+        Overview cached = cachedOverview;
+        if (cached != null && date != null && date.equals(cachedOverviewDate)
+                && now - cachedOverviewAt < OVERVIEW_CACHE_MS) {
+            return cached;
+        }
+
+        Overview result = fetchOverview(date);
+
+        // 只在拿到非空结果时写缓存：空结果不缓存（与 LibraryAreaResolver 的 F-07 修复一致），
+        // 否则闭馆后的一次查询会把「全空」固化成 30 秒的事实。
+        if (result != null && (!result.storeys().isEmpty() || !result.areas().isEmpty())) {
+            cachedOverview = result;
+            cachedOverviewDate = date;
+            cachedOverviewAt = now;
+        }
+        return result;
+    }
+
+    private Overview fetchOverview(String date) {
         String json = "{\"premisesIds\":[\"1\"],\"categoryIds\":[],\"storeyIds\":[],\"boutiqueIds\":[],\"date\":\"" + date + "\"}";
         JsonNode data = post("/v4/space/pick", json).path("data");
         if (data.isMissingNode() || data.isNull()) {
