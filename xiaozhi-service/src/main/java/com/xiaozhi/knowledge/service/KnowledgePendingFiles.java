@@ -396,7 +396,25 @@ public class KnowledgePendingFiles {
         return new PurgeResult(files, bytes);
     }
 
-    private static String contentHash(String fileName, byte[] content) {
+    /**
+     * 待入库文件的 id = {@code sha256(文件名 | 字节数 | md5(内容))} 取前 16 位十六进制。
+     *
+     * <p>三个参与项各有作用，改任何一个都会让"重复上传不堆垃圾"失效：
+     * <ul>
+     *   <li><b>文件名</b>：同名同内容才算同一份；同内容换个名字是另一个待入库文件</li>
+     *   <li><b>字节数</b>：给内层 md5 加个长度前缀，降低碰撞面</li>
+     *   <li><b>不含 userId</b>：所以必须按 ownerId 分目录，否则两人会互相移走对方的文件</li>
+     * </ul>
+     *
+     * <p><b>为什么是包可见而不是 private</b>：类注释声称"fileId 只由内容决定"是安全边界之一，
+     * 但 2026-11-11 核查发现文件里 8 个测试没有一个真正测它（声明了未落实）。
+     * 放宽到包可见后由 {@code KnowledgePendingFilesTest} 直接钉住，
+     * 不必为了可测性再加一层间接。
+     *
+     * <p>返回 16 位十六进制，满足 {@link #find} 的 {@code [0-9a-fA-F]{8,64}} 校验与
+     * {@code "<fileId>-<安全文件名>"} 的命名约定。
+     */
+    static String contentHash(String fileName, byte[] content) {
         try {
             MessageDigest md5 = MessageDigest.getInstance("MD5");
             String head = (fileName == null ? "" : fileName) + "|" + content.length + "|"

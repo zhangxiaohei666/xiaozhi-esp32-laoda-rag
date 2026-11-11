@@ -55,8 +55,14 @@ public class KnowledgePendingCleanupTask {
      * 每天 03:15 执行一次。
      *
      * <p>错开其它清理任务：录音 01:00 / 消息音频 01:30 / 验证码 03:00 / 操作日志 03:30。
+     *
+     * <p>cron 走配置项 {@code xiaozhi.rag.knowledge.pending-cleanup-cron}
+     * （环境变量 {@code KNOWLEDGE_PENDING_CLEANUP_CRON}），默认每天 03:15。
+     * 抽成配置是为了"想验证它真的会跑"时能临时调密（例如设成每 2 分钟一次），
+     * 不必改代码重新打包；生产保持默认即可。注意 javadoc 里不能直接写那个 cron 字面量
+     * —— 里面的斜杠星号会把注释提前闭合。
      */
-    @Scheduled(cron = "0 15 3 * * ?")
+    @Scheduled(cron = "${xiaozhi.rag.knowledge.pending-cleanup-cron:0 15 3 * * ?}")
     public void purgeExpiredPendingFiles() {
         int ttlHours = ragProperties.getKnowledge().getPendingTtlHours();
         if (ttlHours <= 0) {

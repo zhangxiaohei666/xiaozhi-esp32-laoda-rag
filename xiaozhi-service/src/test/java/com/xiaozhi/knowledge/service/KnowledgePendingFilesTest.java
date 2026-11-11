@@ -14,14 +14,18 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 钉住待入库文件的两个安全边界：**文件名清洗** 与 **fileId 只由内容决定**。
+ * 钉住待入库文件的三个边界：**文件名清洗**、**fileId 只由内容决定**、**过期清理不越界**。
  *
  * <p>为什么值得测：
  * <ul>
  *   <li><b>文件名清洗</b>：用户上传的文件名是不可信输入，可能含路径穿越（{@code ../}）、
  *       非法字符、或超长到 OS 报错。清洗错一处就是 500 或写到目录外。</li>
  *   <li><b>fileId 稳定性</b>：同一份内容重复上传必须得到同一个 fileId（幂等），
- *       否则 {@code .pending/} 会堆垃圾。但它**不能**包含 userId —— 那会让隔离失效。</li>
+ *       否则 {@code .pending/} 会堆垃圾。但它**不能**包含 userId —— 那会让隔离失效。
+ *       <b>2026-11-11 补</b>：这条以前只在注释里声称、没有一个测试真正覆盖，
+ *       现在由 {@code contentHash} 的 4 个用例钉住（为此把它从 private 放宽到包可见）。</li>
+ *   <li><b>过期清理不越界</b>：清理只扫 {@code .pending} 与其一级 owner 子目录；
+ *       正式原文目录是它的<b>父目录</b>，越界一层删掉的就是已入库原文。</li>
  * </ul>
  */
 class KnowledgePendingFilesTest {
@@ -186,5 +190,37 @@ class KnowledgePendingFilesTest {
                 .purgeDirOlderThan(null, Duration.ofHours(24), FIXED_NOW).files()).isZero();
         assertThat(KnowledgePendingFiles
                 .purgeDirOlderThan(tmp, Duration.ofHours(24), null).files()).isZero();
+    }
+
+    // ============================================================ fileId 只由内容决定
+
+    private static final byte[] BODY = "图书馆借阅规则".getBytes(StandardCharsets.UTF_8);
+
+    @Test
+    @DisplayName("fileId 是 16 位小写十六进制，能通过 find() 的格式校验")
+    void fileIdIs16LowerHex() {
+        assertThat(KnowledgePendingFiles.contentHash("a.md", BODY))
+                .matches("^[0-9a-f]{16}$");
+    }
+
+    @Test
+    @DisplayName("同名同内容 → 同一个 fileId（重复上传天然幂等，.pending 不堆垃圾）")
+    void sameNameSameContentProducesSameFileId() {
+        assertThat(KnowledgePendingFiles.contentHash("a.md", BODY))
+                .isEqualTo(KnowledgePendingFiles.contentHash("a.md", BODY.clone()));
+    }
+
+    @Test
+    @DisplayName("内容相同但换了文件名 → 不同 fileId（文件名参与计算）")
+    void differentNameProducesDifferentFileId() {
+        assertThat(KnowledgePendingFiles.contentHash("a.md", BODY))
+                .isNotEqualTo(KnowledgePendingFiles.contentHash("b.md", BODY));
+    }
+
+    @Test
+    @DisplayName("同名但内容不同 → 不同 fileId")
+    void sameNameDifferentContentProducesDifferentFileId() {
+        assertThat(KnowledgePendingFiles.contentHash("a.md", BODY))
+                .isNotEqualTo(KnowledgePendingFiles.contentHash("a.md", "另一份内容".getBytes(StandardCharsets.UTF_8)));
     }
 }
