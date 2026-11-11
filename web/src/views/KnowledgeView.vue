@@ -279,7 +279,6 @@ import {
   queryKnowledgeDetail,
   queryKnowledgeDocs,
   queryKnowledgeStats,
-  uploadKnowledgeFile,
 } from '@/services/knowledge'
 import { useTable } from '@/composables/useTable'
 import TableEmptyState from '@/components/TableEmptyState.vue'
@@ -437,15 +436,9 @@ async function handleIngest() {
   }
   ingesting.value = true
   try {
-    // 第一步：上传到待入库区
-    const uploaded = await uploadKnowledgeFile(selectedFile.value)
-    if (uploaded.code !== 200 || !uploaded.data?.fileId) {
-      message.error(uploaded.message || t('knowledge.uploadFailed'))
-      return
-    }
-    // 第二步：用 fileId 入库
+    // 一个请求搞定：文件 + 元信息一起 multipart 提交，后端校验 → 解析 → 入库
     const created = await createKnowledgeDoc({
-      fileId: uploaded.data.fileId,
+      file: selectedFile.value,
       category: uploadForm.category || undefined,
       scope: uploadForm.scope,
       url: uploadForm.url || undefined,

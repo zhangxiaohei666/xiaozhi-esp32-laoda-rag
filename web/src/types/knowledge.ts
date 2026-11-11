@@ -45,17 +45,13 @@ export interface KnowledgeChunk {
   charCount: number
 }
 
-/** 第一步上传成功后返回 */
-export interface KnowledgeUploadResult {
-  fileId: string
-  fileName: string
-  size: number
-  extension: string
-}
-
-/** 第二步创建文档的入参（**不含 userId**，归属由后端从会话取） */
+/**
+ * 上传并入库的入参（**不含 userId**，归属由后端从会话取）。
+ *
+ * 文件本体和元信息一起走同一个 multipart 请求 —— 不再有"先上传拿 fileId"那一步。
+ */
 export interface KnowledgeCreatePayload {
-  fileId: string
+  file: File
   category?: string
   scope?: KnowledgeScope
   url?: string

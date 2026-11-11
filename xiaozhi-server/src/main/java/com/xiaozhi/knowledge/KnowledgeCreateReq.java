@@ -3,16 +3,15 @@ package com.xiaozhi.knowledge;
 import lombok.Data;
 
 /**
- * 创建文档（两步式上传的第二步）请求。
+ * 创建知识库文档的元信息（文件本体走 multipart 的 {@code file} 部分，不在这里）。
  *
  * <p>注意：**没有 userId 字段**。归属人一律从登录会话取（{@code StpUtil.getLoginIdAsInt()}），
  * 前端传什么都不认，否则可以伪造归属、把资料挂到别人名下。
+ *
+ * <p>也没有 fileId：上传与入库已经合成一个请求，不再有"先落暂存区拿 fileId"这一步。
  */
 @Data
 public class KnowledgeCreateReq {
-
-    /** 第一步 POST /api/knowledge/files 返回的 fileId */
-    private String fileId;
 
     /** 归类，可空；空则用文件头部解析出的「来源栏目」，再空则「未分类」 */
     private String category;

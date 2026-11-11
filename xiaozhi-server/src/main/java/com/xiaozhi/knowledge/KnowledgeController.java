@@ -22,15 +22,17 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,8 +43,8 @@ import java.util.Map;
  *
  * <h3>接口分工</h3>
  * <pre>
- * 文件传输：POST /api/knowledge/files          （KnowledgeFileController，只落盘）
- * 入库：    POST /api/knowledge/documents      （本类，校验权限 → 解析向量化 → 回写账本）
+ * 入库：    POST /api/knowledge/documents      （本类，multipart：文件 + 元信息；
+ *                                               校验权限 → 落账 → 原文落盘 → 解析向量化）
  * 管理：    GET/DELETE /api/knowledge/documents[/{docId}]、/stats、/categories
  * 调试：    GET /api/knowledge/ping、/search
  * </pre>
@@ -83,9 +85,6 @@ public class KnowledgeController extends BaseController {
     @Resource
     private KnowledgeConvert knowledgeConvert;
 
-    @Resource
-    private com.xiaozhi.knowledge.service.KnowledgePendingFiles knowledgePendingFiles;
-
     // ==================== 连通性自检 ====================
 
     /**
@@ -101,25 +100,65 @@ public class KnowledgeController extends BaseController {
         return ApiResponse.success(toPingResp(qdrantRagService.ping()));
     }
 
-    // ==================== 入库（两步式的第二步） ====================
+    // ==================== 入库（一步式：上传 + 解析入库） ====================
 
     /**
-     * 把已上传到待入库区的文件变成一条知识库文档。
+     * 上传一份资料并入库 —— 一步搞定，不需要先"上传到暂存区"再"提交入库"。
      *
-     * <p>流程：校验 scope 权限 → 读待入库文件 → 落账 processing → 解析/切块/向量化/写 Qdrant
-     * → 写分块目录 → 账本置 success（失败则 failed + 补偿删向量）。
+     * <p>流程（顺序是设计的一部分，别随手调换）：
+     * <ol>
+     *   <li>校验文件格式与大小（纯内存，无副作用）</li>
+     *   <li>校验 scope 权限 —— <b>在落盘之前</b>，没权限的请求不该在磁盘留东西</li>
+     *   <li>算内容指纹、解析文件头部元信息</li>
+     *   <li>落账 processing，拿到 docId</li>
+     *   <li>原文落盘（失败只降级，不阻断入库）</li>
+     *   <li>解析 → 切块 → 向量化 → 写 Qdrant → 写分块目录 → 账本置 success
+     *       （失败则 failed + 补偿删向量与刚落的原文）</li>
+     * </ol>
      *
-     * @param req 文件 id + 归类 + 可见性 + 原文链接 + 发布日期
+     * <p>为什么合并成一个请求：拆分那版的三个理由（鉴权与传输解耦、可复用、失败免重传）
+     * 实测一个都没兑现 —— 第一步照样写磁盘且只校验登录、复用没落地、
+     * 失败后原文已被搬走必须重传。合并后不再有暂存目录与 fileId，也就没有"孤儿待入库文件"。
+     *
+     * @param file        文档文件（txt / md / markdown，≤ 20MB）
+     * @param category    归类（可空；空则用文件头部解析出的「来源栏目」）
+     * @param scope       private（默认）/ shared（仅管理员可设）
+     * @param url         原文链接（可空）
+     * @param publishDate 发布日期 yyyy-MM-dd（可空）
+     * @param sourceType  来源类型（可空）
      * @return docId、标题、字数、块数、可见性、状态
      */
-    @PostMapping("/documents")
+    @PostMapping(value = "/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:upload")
-    @Operation(summary = "创建知识库文档",
-            description = "传入第一步返回的 fileId。走权限校验后解析、切块、向量化并回写账本")
-    public ApiResponse<KnowledgeCreateResultResp> createDocument(@RequestBody KnowledgeCreateReq req) {
+    @Operation(summary = "上传并入库",
+            description = "一次请求完成上传与入库。文件格式由 ai 层的 DocumentFormats 统一约束")
+    public ApiResponse<KnowledgeCreateResultResp> createDocument(
+            @Parameter(description = "文档文件（txt / md / markdown，≤ 20MB）")
+            @RequestPart("file") MultipartFile file,
+            @Parameter(description = "归类，可空") @RequestParam(required = false) String category,
+            @Parameter(description = "可见性 private/shared，默认 private")
+            @RequestParam(required = false) String scope,
+            @Parameter(description = "原文链接，可空") @RequestParam(required = false) String url,
+            @Parameter(description = "发布日期 yyyy-MM-dd，可空")
+            @RequestParam(required = false) String publishDate,
+            @Parameter(description = "来源类型，可空")
+            @RequestParam(required = false) String sourceType) throws Exception {
+
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("文件为空");
+        }
+        KnowledgeCreateReq req = new KnowledgeCreateReq();
+        req.setCategory(category);
+        req.setScope(scope);
+        req.setUrl(url);
+        req.setPublishDate(publishDate);
+        req.setSourceType(sourceType);
+
         Integer userId = knowledgeAccessGuard.currentUserId();
-        return ApiResponse.success(toCreateResult(knowledgeIngestAppService.create(req, userId)));
+        // 文件名取原始名（展示与落盘都用它）；内容以字节数组一次性读完，后续全在内存里
+        return ApiResponse.success(toCreateResult(
+                knowledgeIngestAppService.create(file.getOriginalFilename(), file.getBytes(), req, userId)));
     }
 
     // ==================== 查询 ====================
@@ -230,50 +269,6 @@ public class KnowledgeController extends BaseController {
         // 与对话链路用同一套过滤（user_id / scope），否则调试结果会误导
         return ApiResponse.success(toSearchResp(q,
                 retrievalService.searchForDebug(q, knowledgeAccessGuard.currentUserId())));
-    }
-
-    // ==================== 旧接口（保留兼容，已废弃） ====================
-
-    /**
-     * 一步式上传并入库（给抓取脚本用的便捷入口）。
-     *
-     * <p>内部走的还是两步式的同一套编排：先落 .pending，再入库。
-     * 保留这个接口是为了不让已有的抓取脚本（{@code .run\抓取*.ps1}）改动。
-     *
-     * <p>可见性固定为 shared —— 抓取的都是公开网页内容，与早期行为一致。
-     *
-     * @deprecated 新代码请用两步式 {@code POST /api/knowledge/files} + {@code POST /api/knowledge/documents}
-     */
-    @Deprecated
-    @PostMapping("/upload")
-    @ResponseBody
-    @SaCheckPermission("system:knowledge:api:upload")
-    @Operation(summary = "【已废弃】一步式上传并入库", description = "请改用 /files + /documents 两步式")
-    public ApiResponse<KnowledgeCreateResultResp> upload(
-            @Parameter(description = "文档文件") @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
-            @Parameter(description = "来源链接（可选）") @RequestParam(value = "url", required = false) String url)
-            throws Exception {
-
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("文件为空");
-        }
-        String fileName = file.getOriginalFilename();
-        if (fileName == null || fileName.isBlank()) {
-            throw new IllegalArgumentException("缺少文件名");
-        }
-
-        // ① 先落到 .pending（与两步式的第一步等价）
-        com.xiaozhi.knowledge.service.KnowledgePendingFiles.PendingFile pending =
-                knowledgePendingFiles.save(fileName, file.getBytes(), knowledgeAccessGuard.currentUserId());
-
-        // ② 走统一编排入库
-        KnowledgeCreateReq req = new KnowledgeCreateReq();
-        req.setFileId(pending.fileId());
-        req.setScope(KnowledgeDocBO.SCOPE_SHARED);
-        req.setUrl(url);
-
-        return ApiResponse.success(toCreateResult(
-                knowledgeIngestAppService.create(req, knowledgeAccessGuard.currentUserId())));
     }
 
     // ==================== Map → Resp 转换 ====================

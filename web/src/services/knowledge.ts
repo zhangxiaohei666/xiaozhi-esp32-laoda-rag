@@ -7,28 +7,34 @@ import type {
   KnowledgeDoc,
   KnowledgeQueryParams,
   KnowledgeStats,
-  KnowledgeUploadResult,
 } from '@/types/knowledge'
 
 /**
- * 第一步：把文件传到后端"待入库区"，只落盘、不解析。
+ * 上传并入库：文件本体与元信息走同一个 multipart 请求。
  *
- * 与第二步拆开的意义：上传本身无副作用（只需登录），
- * 真正的权限校验发生在 {@link createKnowledgeDoc}；入库失败也不必重新上传文件。
- */
-export function uploadKnowledgeFile(file: File) {
-  const form = new FormData()
-  form.append('file', file)
-  return http.postMultipart<KnowledgeUploadResult>(api.knowledge.files, form)
-}
-
-/**
- * 第二步：用 fileId 创建文档（后端解析 → 切块 → 向量化 → 回写账本）。
+ * 以前拆成"先传文件拿 fileId、再提交入库"两步，但实测那三步好处一个都没兑现
+ * （上传照样写磁盘且只校验登录、复用没落地、失败后原文件已被搬走必须重传），
+ * 反而多出一套暂存目录与孤儿文件。合并后后端在一次请求内完成校验 → 解析 → 入库。
  *
  * `scope=shared` 只有管理员能设，普通用户传了会被后端 403 拒绝。
  */
 export function createKnowledgeDoc(payload: KnowledgeCreatePayload) {
-  return http.post<KnowledgeCreateResult>(api.knowledge.documents, payload)
+  const form = new FormData()
+  form.append('file', payload.file)
+  // 可选字段：有值才带，避免后端收到一堆空串（空串会和"没传"语义不同）
+  if (payload.category) {
+    form.append('category', payload.category)
+  }
+  if (payload.scope) {
+    form.append('scope', payload.scope)
+  }
+  if (payload.url) {
+    form.append('url', payload.url)
+  }
+  if (payload.publishDate) {
+    form.append('publishDate', payload.publishDate)
+  }
+  return http.postMultipart<KnowledgeCreateResult>(api.knowledge.documents, form)
 }
 
 /** 文档列表（非管理员只返回「自己的 + 共享的」） */

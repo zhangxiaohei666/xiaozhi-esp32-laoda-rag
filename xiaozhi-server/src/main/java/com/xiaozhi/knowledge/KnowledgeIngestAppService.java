@@ -1,5 +1,6 @@
 package com.xiaozhi.knowledge;
 
+import com.xiaozhi.ai.rag.DocumentFormats;
 import com.xiaozhi.ai.rag.DocumentIngestService;
 import com.xiaozhi.ai.rag.QdrantRagService;
 import com.xiaozhi.common.exception.OperationFailedException;
@@ -9,7 +10,7 @@ import com.xiaozhi.common.model.bo.KnowledgeDetailBO;
 import com.xiaozhi.common.model.bo.KnowledgeDocBO;
 import com.xiaozhi.knowledge.service.KnowledgeAccessGuard;
 import com.xiaozhi.knowledge.service.KnowledgeDocService;
-import com.xiaozhi.knowledge.service.KnowledgePendingFiles;
+import com.xiaozhi.knowledge.service.KnowledgeOriginalFiles;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -61,7 +62,7 @@ import java.util.Map;
 public class KnowledgeIngestAppService {
 
     @Resource
-    private KnowledgePendingFiles pendingFileStore;
+    private KnowledgeOriginalFiles originalFiles;
 
     @Resource
     private DocumentIngestService documentIngestService;
@@ -93,64 +94,63 @@ public class KnowledgeIngestAppService {
      * @param userId 归属人（**调用方从会话取，不能来自请求体**）
      * @return id、标题、字数、块数、状态
      */
-    public Map<String, Object> create(KnowledgeCreateReq req, Integer userId) {
-        if (req == null || !StringUtils.hasText(req.getFileId())) {
-            throw new IllegalArgumentException("缺少 fileId，请先调用 POST /api/knowledge/files 上传文件");
-        }
-        String scope = StringUtils.hasText(req.getScope())
-                ? req.getScope().trim()
+    public Map<String, Object> create(String fileName, byte[] content, KnowledgeCreateReq req, Integer userId) {
+        KnowledgeCreateReq request = req == null ? new KnowledgeCreateReq() : req;
+
+        // ① 校验内容与格式。纯内存判断，不产生任何副作用 ——
+        //    格式白名单来自 ai 层的 DocumentFormats（全项目唯一事实来源），
+        //    上传侧不再自己维护一份拷贝：以后加 PDF/Word 只改那里，这里自动放开。
+        DocumentFormats.assertAcceptable(fileName, content == null ? 0 : content.length);
+
+        String scope = StringUtils.hasText(request.getScope())
+                ? request.getScope().trim()
                 : KnowledgeDocBO.SCOPE_PRIVATE;
-        // 第 3 层鉴权：非管理员不允许把资料设为共享
+        // 第 3 层鉴权：非管理员不允许把资料设为共享。
+        // 必须在落盘之前 —— 没权限的请求不该在磁盘上留下任何东西。
         knowledgeAccessGuard.assertCanCreateScope(scope);
 
-        // 归属人：待入库文件按它分目录（fileId 不含用户，共用一个目录会互相移走对方的文件）
         int ownerId = userId == null ? 0 : userId;
 
-        KnowledgePendingFiles.PendingFile pending = readPending(req.getFileId(), ownerId);
-        byte[] content = readBytes(pending);
-        String fileName = pending.fileName();
-
-        // ① 内容指纹（与身份无关，只由内容决定）
+        // ② 内容指纹（与身份无关，只由内容决定）
         String contentHash = DocumentIngestService.computeContentHash(content);
 
-        // ② 先解析文件头部元信息（抓取脚本会把「来源栏目/发布日期/原文链接」写在 md 头部）。
-        //    必须在写账本之前解析：以前 withMeta 只信请求参数，抓取脚本不传就是 null，
-        //    结果 Qdrant payload 有值、MySQL 账本却是空，两边对不上。
+        // ③ 解析文件头部元信息（抓取脚本会把「来源栏目/发布日期/原文链接」写在 md 头部）。
+        //    必须在写账本之前解析：否则抓取脚本不传参数时，Qdrant payload 有值、
+        //    MySQL 账本却是空，两边对不上。
         DocumentIngestService.HeaderInfo header = parseHeaderOf(content);
 
-        // ③ 找到或创建账本记录，拿到 id
-        Long docId = resolveDocId(ownerId, contentHash, fileName, req, scope, header);
+        // ④ 找到或创建账本记录，拿到 docId（磁盘文件名要用它做前缀）
+        Long docId = resolveDocId(ownerId, contentHash, fileName, request, scope, header);
 
-        // ③ 原文落盘：把 .pending 的文件移到正式目录，返回相对路径
-        // 返回空串表示"没有正式副本"（promote 内部已 log.error 带 docId）。
-        // 这时仍然入库 —— 用户能查能用，但该文档以后无法重建索引（换 embedding 模型时会缺原文）。
-        // 所以日志要留一条，别让"看起来成功"掩盖了降级。
-        String storedPath = pendingFileStore.promote(pending, docId);
-        if (storedPath.isEmpty()) {
-            log.warn("文档将以「无原文副本」状态入库，后续无法重建索引: docId={}, 文件={}",
-                    docId, fileName);
+        // ⑤ 原文落盘。失败不阻断入库：用户能查能用，只是这篇以后无法重建索引
+        //    （换 embedding 模型、改切块规则时会缺原文）。所以日志必须是 error 级别，
+        //    别让"看起来成功"掩盖了降级。
+        String storedPath = "";
+        try {
+            storedPath = originalFiles.save(fileName, content, docId);
+        } catch (Exception e) {
+            log.error("原文落盘失败，该文档将无法重建索引: docId={}, 文件={}, 原因={}",
+                    docId, fileName, e.getMessage());
         }
 
-        // ④ 解析 → 切块 → 向量化 → 写 Qdrant
+        // ⑥ 解析 → 切块 → 向量化 → 写 Qdrant
         DocumentIngestService.IngestOptions options = new DocumentIngestService.IngestOptions(
                 docId, contentHash, storedPath,
-                req.getUrl(), userId, scope, req.getCategory(), req.getPublishDate());
+                request.getUrl(), userId, scope, request.getCategory(), request.getPublishDate());
         DocumentIngestService.IngestResult result;
         try {
             result = documentIngestService.ingest(fileName, content, options);
         } catch (Exception e) {
-            // 失败：记原因 + 补偿删 Qdrant 残留（幂等，失败也不掩盖原始错误）
+            // 失败：记原因 + 删 Qdrant 残留 + 删刚落盘的原文（都幂等，且不掩盖原始错误）
             knowledgeDocService.markFailed(docId, e.getMessage());
             qdrantRagService.deleteByDocId(docId);
+            originalFiles.delete(storedPath);
             throw new OperationFailedException("入库失败：" + e.getMessage(), e);
         }
 
-        // ⑤ 成功：写分块目录 + 更新账本
+        // ⑦ 成功：写分块目录 + 更新账本
         knowledgeDocService.replaceChunks(docId, buildChunkRows(result, docId));
         knowledgeDocService.markSuccess(docId, result.charCount(), result.chunkCount(), storedPath);
-
-        // 待入库文件已经 move 走了，这里只是兜底清理（幂等）
-        pendingFileStore.discard(req.getFileId(), ownerId);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("id", docId);
@@ -249,7 +249,7 @@ public class KnowledgeIngestAppService {
                     "向量库删除失败，该资料仍可能被检索到。请稍后重试（Qdrant 可能暂时不可用）");
         }
         // ③ 磁盘原文（文件不在也不算失败）
-        deleteStoredFile(doc.getFilePath());
+        originalFiles.delete(doc.getFilePath());
         // ④ 账本
         knowledgeDocService.delete(id);
         log.info("知识库文档已删除: id={}, 标题={}", id, doc.getTitle());
@@ -267,37 +267,6 @@ public class KnowledgeIngestAppService {
     }
 
     // ---------- 内部工具 ----------
-
-    private KnowledgePendingFiles.PendingFile readPending(String fileId, int ownerId) {
-        try {
-            return pendingFileStore.find(fileId, ownerId);
-        } catch (Exception e) {
-            throw new ResourceNotFoundException(e.getMessage());
-        }
-    }
-
-    private byte[] readBytes(KnowledgePendingFiles.PendingFile pending) {
-        try {
-            return pendingFileStore.read(pending);
-        } catch (Exception e) {
-            throw new OperationFailedException("读取待入库文件失败：" + e.getMessage(), e);
-        }
-    }
-
-    /** 删磁盘原文。账本里存的是相对路径（老数据可能是绝对路径，resolveStored 两种都兼容）。 */
-    private void deleteStoredFile(String filePath) {
-        if (!StringUtils.hasText(filePath)) {
-            return;
-        }
-        try {
-            java.nio.file.Path path = pendingFileStore.resolveStored(filePath);
-            if (path != null) {
-                java.nio.file.Files.deleteIfExists(path);
-            }
-        } catch (Exception e) {
-            log.warn("删除原文文件失败（不影响账本删除）: {}", e.getMessage());
-        }
-    }
 
     /** 由入库结果生成分块目录（**不含正文**，正文只存在 Qdrant 与磁盘原文里）。 */
     private List<KnowledgeChunkBO> buildChunkRows(DocumentIngestService.IngestResult result, Long docId) {

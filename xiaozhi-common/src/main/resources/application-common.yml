@@ -195,17 +195,6 @@ xiaozhi:
       # 入库追踪日志：打印解析预览、每次切块的原因、每块字数、payload 示例。
       # 只在读代码或排查入库问题时临时开启，平时保持 false 免得刷屏。
       debug-trace: ${KNOWLEDGE_DEBUG_TRACE:false}
-      # 待入库文件保留小时数，<= 0 表示关闭清理。
-      # 两步式上传的第一步只把文件落进 .pending/{ownerId}/，用户没继续第二步
-      # （关页面 / 断网 / 解析失败）时文件没有其它出口；第一步又只要求登录、
-      # 不校验 upload 权限码，任何登录用户都能写 20MB 进来。
-      # 清理任务每天凌晨按「最后修改时间」删掉超过这个时长的文件。
-      # 24 小时远大于正常间隔（一次 HTTP 往返几秒），又不会让磁盘长期堆积。
-      pending-ttl-hours: ${KNOWLEDGE_PENDING_TTL_HOURS:24}
-      # 清理任务的 cron（Spring 6 段格式），默认每天 03:15。
-      # 抽成配置项是为了"想验证它真会跑"时能临时调密（如 0 */2 * * * ?），
-      # 不必改代码重新打包；生产保持默认即可。
-      pending-cleanup-cron: "${KNOWLEDGE_PENDING_CLEANUP_CRON:0 15 3 * * ?}"
 
 # ============================================================
 # Sa-Token 认证框架配置（两边共用部分；jwt-secret-key 见各自 application.yml）
