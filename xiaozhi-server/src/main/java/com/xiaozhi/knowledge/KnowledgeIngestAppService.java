@@ -77,21 +77,35 @@ public class KnowledgeIngestAppService {
     private QdrantRagService qdrantRagService;
 
     /**
-     * 第二步：把待入库文件变成一条知识库文档。
+     * 上传并入库：一次请求完成"校验 → 落账 → 原文落盘 → 解析切块向量化 → 回写账本"。
      *
-     * <p><b>⚠️ 关于"失败后能不能用原 fileId 重试"</b>：
-     * 第 ③ 步 {@code promote()} 会在解析入库<b>之前</b>把文件从 {@code .pending/} 移进正式目录，
-     * 所以第 ④ 步失败时文件已经不在待入库区了 —— 再拿同一个 fileId 调本方法会报"待入库文件不存在"，
-     * <b>必须重新上传</b>。原文本身不会丢（已在正式目录），只是要重传一遍。
+     * <p><b>执行顺序以方法体里的行内标号 ①~⑦ 为准，这里不再复述一遍。</b>
+     * 以前 javadoc 自列过一份步骤清单、代码里另有一套标号，改代码时只动一处，
+     * 两套编号就会指不同的事 —— 上次重写时确实踩到了：javadoc 列的项数和代码标号对不上。
+     * 只有两处顺序上的取舍需要单独讲清楚：
+     * <ul>
+     *   <li><b>scope 权限校验要早</b>：它在 ① 之后、② 之前 —— 没权限的请求
+     *       不该在磁盘上留下任何东西</li>
+     *   <li><b>原文落盘（⑤）放在解析（③）之后</b>：那时已确认文件能解析，
+     *       落盘失败不会留下垃圾</li>
+     * </ul>
      *
-     * <p>为什么不把 promote 挪到 ingest 之后：那样 ingest 成功而 promote 失败时，
-     * 向量和账本都成了、磁盘却没有原文，反而更难对齐；而且重建索引依赖磁盘原文。
-     * 两害相权，选了"先落盘"—— 数据不丢，代价是失败要重传。
-     * <b>如果要真正支持失败免重传</b>，正确改法是把 promote 挪到 ingest 之后，
-     * 并让 promote 失败时回滚已写入的向量与账本状态，而不是只调换两行顺序。
+     * <p><b>失败语义</b>：⑥ 起任一步失败（包含 ⑦ 写分块目录与置 success），都执行
+     * {@code markFailed} + 按 docId 删向量 + 删刚落盘的原文，然后把原始异常抛出去，
+     * 不留半截状态。
      *
-     * @param req    文件 id + 归类 + 可见性等
-     * @param userId 归属人（**调用方从会话取，不能来自请求体**）
+     * <p><b>唯一被允许降级的是 ⑤ 落盘失败</b>：记 error 后继续入库 ——
+     * 用户能查能用，只是这篇以后无法重建索引（换 embedding 模型、改切块规则时会缺原文）。
+     *
+     * <p><b>历史说明</b>：这里原本写着一大段"失败后能不能用原 fileId 重试"的推演。
+     * 那个机制（两步式上传 + {@code .pending} 暂存 + {@code promote()}）已在
+     * 2026-11-11 的一步式重构中<b>整体删除</b>（提交 {@code e65d0b9}），
+     * fileId 与 promote 都不再存在，现在传进来的就是文件字节本身。
+     *
+     * @param fileName 原始文件名（展示与落盘都用它）
+     * @param content  文件字节（≤ 20MB，调用方已在内存里读好）
+     * @param req      归类 / 可见性 / 原文链接 / 发布日期（可空）
+     * @param userId   归属人（<b>调用方从会话取，不能来自请求体</b>）
      * @return id、标题、字数、块数、状态
      */
     public Map<String, Object> create(String fileName, byte[] content, KnowledgeCreateReq req, Integer userId) {
@@ -105,8 +119,8 @@ public class KnowledgeIngestAppService {
         String scope = StringUtils.hasText(request.getScope())
                 ? request.getScope().trim()
                 : KnowledgeDocBO.SCOPE_PRIVATE;
-        // 第 3 层鉴权：非管理员不允许把资料设为共享。
-        // 必须在落盘之前 —— 没权限的请求不该在磁盘上留下任何东西。
+        // 第 3 层鉴权（位于 ① 与 ② 之间：必须早于任何落盘动作 —— 没权限的请求
+        // 不该在磁盘上留下任何东西；javadoc 里用"① 之后、② 之前"来锚定这一步）
         knowledgeAccessGuard.assertCanCreateScope(scope);
 
         int ownerId = userId == null ? 0 : userId;
