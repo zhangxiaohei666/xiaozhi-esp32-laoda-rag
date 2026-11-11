@@ -92,13 +92,24 @@ logs/
 # 但只要有人漏配那个环境变量，校内原文就会被写进这里 —— 一次 git add -A 就进仓库了。
 # 实测 2026-11-06 19:58：确实出现过进程落在这个目录的情况，所以必须兜底忽略。
 #
-# ⚠️ 2026-11-11 修正：这里必须写成 /knowledge/（前导斜杠 = 只锚定仓库根目录）。
+# ⚠️ 2026-11-11 修正①：这里必须写成 /knowledge/（前导斜杠 = 只锚定仓库根目录）。
 #    原来写的是 knowledge/，未锚定，会匹配树上**任意层级**叫 knowledge 的目录，
 #    结果把 com/xiaozhi/knowledge/ 这个**源码包**也一并忽略了：
-#    已跟踪的 14 个文件不受影响，但**新加进该包的类会被静默忽略**，
-#    git add 不报错、git status 也看不到，直到别人 clone 下来编译失败才发现。
-#    实测踩到：新增的 KnowledgePendingCleanupTask 两次提交都没进去。
+#    已跟踪的文件不受影响（0acbcd4 时是 14 个，HEAD 是 16 个 —— 计数要带时点），
+#    但**新加进该包的类会被静默忽略**：git add 不报错、git status 也看不到，
+#    直到别人 clone 下来编译失败才发现。
+#    实测踩到：新增的 KnowledgePendingCleanupTask 第一次提交根本没进去。
+#
+# ⚠️ 2026-11-11 修正②：光锚定到仓库根会**削掉一半兜底**，所以下面还要列两个模块级目录。
+#    依据：RuntimePathConfig.resolveDataDir() 在 data-dir 留空时取 Path.of(".")，
+#    也就是**进程的工作目录**，不是仓库根：
+#      · bin/*.sh 启动            → 脚本里 cd "$ROOT_DIR"，落点 <repo>/knowledge/          → 第 1 条盖得住
+#      · IDEA 运行 / mvn spring-boot:run → 工作目录是模块目录，落点 xiaozhi-server/knowledge/
+#    只写 /knowledge/ 的话，用 IDE 跑一次就可能把校内原文写进模块目录**且不被忽略**，
+#    而这正是 2026-11-06 P-01 想防的事。2026-11-11 第三方核查指出，已补齐。
 /knowledge/
+/xiaozhi-server/knowledge/
+/xiaozhi-dialogue/knowledge/
 
 # study.md = 个人学习笔记，不属于项目代码
 study.md

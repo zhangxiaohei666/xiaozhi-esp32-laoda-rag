@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -333,6 +334,13 @@ public class KnowledgePendingFiles {
      *   <li>单个文件失败只记一条 warn，不让整轮中断</li>
      * </ul>
      *
+     * <p><b>异常处理为什么要同时接 {@link IOException} 和 {@link UncheckedIOException}</b>：
+     * {@link Files#list} 返回的是<b>懒流</b>，句柄在调用时就已经打开，所以"打开失败"
+     * （不存在 / 无权限）会在 {@code Files.list()} 那一行抛 {@link IOException}；
+     * 而<b>遍历过程中</b>的 I/O 错误会被包成 {@link UncheckedIOException}（RuntimeException）
+     * 从 {@code toList()} / {@code forEach()} 抛出，<b>只 catch IOException 接不住</b>，
+     * 会直接逃到 Spring 调度器。2026-11-11 第三方核查指出过这一点，已修正。
+     *
      * @param pendingDir 待入库目录（不存在时直接返回空结果）
      * @param ttl        保留时长
      * @param now        当前时刻，由调用方传入（生产走 {@link DateUtils#instant()}，单测可固定）
@@ -352,12 +360,15 @@ public class KnowledgePendingFiles {
                 if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
                     try (Stream<Path> inner = Files.list(child)) {
                         inner.forEach(candidates::add);
+                    } catch (IOException | UncheckedIOException e) {
+                        // 内层单独兜住：一个 owner 子目录出问题不该让整轮清空中断
+                        log.warn("扫描待入库子目录失败，跳过: {} ({})", child, e.getMessage());
                     }
                 } else {
                     candidates.add(child);
                 }
             }
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
             log.warn("扫描待入库目录失败，跳过本轮: {} ({})", pendingDir, e.getMessage());
             return PurgeResult.EMPTY;
         }
