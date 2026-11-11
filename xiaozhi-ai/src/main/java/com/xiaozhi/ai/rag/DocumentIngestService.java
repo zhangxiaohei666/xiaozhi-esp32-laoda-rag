@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import com.xiaozhi.utils.DateUtils;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -469,12 +470,32 @@ public class DocumentIngestService {
         return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
+    /**
+     * 内层 MD5：只用来先把长内容压成短串，不做安全用途。
+     *
+     * <p><b>⚠️ 禁止在这里加任何"降级返回值"</b>
+     *
+     * <p>这段代码原本在 catch 里写的是 {@code return String.valueOf(content.length)}，
+     * 也就是"MD5 拿不到就把字节数当哈希"。后果不是报错，而是<b>静默丢数据</b>：
+     * <pre>
+     * head = "5120" + "|" + "5120" = "5120|5120"
+     * → contentHash 只取决于文件大小
+     * → 两份字节数相同、内容完全不同的文档算出同一个 contentHash
+     * → findByOwnerAndHash 判定"这篇已经存在"，走"复用已有记录"分支
+     * → resetToProcessing + 重新 ingest，把原来那篇的内容覆盖掉
+     * </pre>
+     * 用户看到的是"上传成功"，实际上一份文档被另一份顶掉了。
+     *
+     * <p>MD5 是 JCA 规范要求每个 JRE 都必须提供的算法
+     * （{@code MessageDigest} 文档明确列出 MD5 / SHA-1 / SHA-256 为必备），
+     * 拿不到说明运行环境本身已经坏了。这种情况必须立刻失败，不能带着错误指纹继续跑。
+     */
     private static String md5Hex(byte[] content) {
         try {
             MessageDigest md5 = MessageDigest.getInstance("MD5");
             return HexFormat.of().formatHex(md5.digest(content));
-        } catch (Exception e) {
-            return String.valueOf(content.length);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("计算内容指纹失败：运行环境不支持 MD5", e);
         }
     }
 
