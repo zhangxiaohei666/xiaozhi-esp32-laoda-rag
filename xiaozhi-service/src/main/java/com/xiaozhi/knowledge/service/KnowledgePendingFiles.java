@@ -2,16 +2,21 @@ package com.xiaozhi.knowledge.service;
 
 import com.xiaozhi.common.config.RagProperties;
 import com.xiaozhi.common.config.RuntimePathConfig;
+import com.xiaozhi.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -278,6 +283,106 @@ public class KnowledgePendingFiles {
         } catch (Exception e) {
             log.debug("清理待入库文件跳过: {}", e.getMessage());
         }
+    }
+
+    // ------------------------------------------------------------- 过期清理
+
+    /**
+     * 清理结果：删了几个文件、释放多少字节。
+     *
+     * @param files 删除的文件数
+     * @param bytes 释放的字节数（按删除前的 size 累加）
+     */
+    public record PurgeResult(int files, long bytes) {
+        /** 一次都没删（也用于 ttl 非法、目录不存在等直接返回的情况）。 */
+        public static final PurgeResult EMPTY = new PurgeResult(0, 0L);
+    }
+
+    /**
+     * 删除 {@link #pendingDir} 下超过 {@code ttl} 没被改过的待入库文件。
+     *
+     * <p><b>为什么需要清理</b>：两步式上传的第一步只落盘，用户没继续第二步
+     * （关页面 / 断网 / 解析失败）时文件没有任何出口 —— {@link #promote} 只在入库成功时
+     * 搬走、{@link #discard} 只在明确失败时删除。而第一步只要求登录、不校验 upload
+     * 权限码，所以任何登录用户都能往磁盘写 20MB 文件，不清理就是无上限的占用面。
+     *
+     * <p><b>为什么用修改时间</b>：{@code creationTime} 在部分文件系统上取不到或语义不同，
+     * {@code lastModifiedTime} 才是普遍可靠的。待入库文件写入后不会再被修改，本场景两者等价。
+     *
+     * @param ttl 保留时长；{@code null}、零或负数表示关闭清理
+     * @return 删除数量与释放字节数
+     */
+    public PurgeResult purgeOlderThan(Duration ttl) {
+        return purgeDirOlderThan(pendingDir, ttl, DateUtils.instant());
+    }
+
+    /**
+     * {@link #purgeOlderThan} 的实现。提成 {@code static} 是为了让单测能直接传临时目录，
+     * 不必构造 {@link RuntimePathConfig} / {@link RagProperties}。
+     *
+     * <p><b>扫描只到两层，这是安全边界</b>：
+     * <ul>
+     *   <li>第 1 层：{@code pendingDir} 自己的散文件 —— 改造前上传、还没入库的历史文件就在这</li>
+     *   <li>第 2 层：{@code pendingDir} 的一级子目录（按 ownerId 分）里的文件</li>
+     * </ul>
+     * <b>绝不向上、也绝不递归更深</b>：正式原文目录是 {@code pendingDir} 的<b>父目录</b>，
+     * 这里一旦走错一层，删掉的就是用户已经入库的原文。所以：
+     * <ul>
+     *   <li>不跟随符号链接（{@link LinkOption#NOFOLLOW_LINKS}），避免顺着链接删到外面去</li>
+     *   <li>只删普通文件，目录一律跳过</li>
+     *   <li>单个文件失败只记一条 warn，不让整轮中断</li>
+     * </ul>
+     *
+     * @param pendingDir 待入库目录（不存在时直接返回空结果）
+     * @param ttl        保留时长
+     * @param now        当前时刻，由调用方传入（生产走 {@link DateUtils#instant()}，单测可固定）
+     */
+    static PurgeResult purgeDirOlderThan(Path pendingDir, Duration ttl, Instant now) {
+        if (pendingDir == null || ttl == null || ttl.isZero() || ttl.isNegative() || now == null) {
+            return PurgeResult.EMPTY;
+        }
+        if (!Files.isDirectory(pendingDir, LinkOption.NOFOLLOW_LINKS)) {
+            return PurgeResult.EMPTY;
+        }
+        Instant cutoff = now.minus(ttl);
+
+        List<Path> candidates = new ArrayList<>();
+        try (Stream<Path> children = Files.list(pendingDir)) {
+            for (Path child : children.toList()) {
+                if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
+                    try (Stream<Path> inner = Files.list(child)) {
+                        inner.forEach(candidates::add);
+                    }
+                } else {
+                    candidates.add(child);
+                }
+            }
+        } catch (IOException e) {
+            log.warn("扫描待入库目录失败，跳过本轮: {} ({})", pendingDir, e.getMessage());
+            return PurgeResult.EMPTY;
+        }
+
+        int files = 0;
+        long bytes = 0L;
+        for (Path candidate : candidates) {
+            try {
+                if (!Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                    continue;
+                }
+                Instant modified = Files.getLastModifiedTime(candidate, LinkOption.NOFOLLOW_LINKS).toInstant();
+                if (modified.isAfter(cutoff)) {
+                    continue;
+                }
+                long size = Files.size(candidate);
+                if (Files.deleteIfExists(candidate)) {
+                    files++;
+                    bytes += size;
+                }
+            } catch (IOException e) {
+                log.warn("删除过期待入库文件失败: {} ({})", candidate, e.getMessage());
+            }
+        }
+        return new PurgeResult(files, bytes);
     }
 
     private static String contentHash(String fileName, byte[] content) {
