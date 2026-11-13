@@ -2,6 +2,7 @@ package com.xiaozhi.knowledge;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import com.xiaozhi.ai.rag.DocumentFormats;
 import com.xiaozhi.ai.rag.DocumentIngestService;
 import com.xiaozhi.ai.rag.QdrantRagService;
 import com.xiaozhi.ai.rag.RetrievalService;
@@ -148,6 +149,13 @@ public class KnowledgeController extends BaseController {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("文件为空");
         }
+        // 先按 getSize() 判，再读内容。
+        // getBytes() 会把整份文件复制成一个 byte[]，若等读完再在编排层校验，
+        // 一个 20~100MB 的请求会先吃掉等量堆内存才被拒 —— 白扛一次 OOM 风险。
+        // 注意 getSize() 也是"容器已经收完"之后才有的值：真正"还没收就拒"由
+        // KnowledgeUploadSizeFilter 按 Content-Length 在解析前拦一道。两层各管一段。
+        DocumentFormats.assertAcceptable(file.getOriginalFilename(), file.getSize());
+
         KnowledgeCreateReq req = new KnowledgeCreateReq();
         req.setCategory(category);
         req.setScope(scope);

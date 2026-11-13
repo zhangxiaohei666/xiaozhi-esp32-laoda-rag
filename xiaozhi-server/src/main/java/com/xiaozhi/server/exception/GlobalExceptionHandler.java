@@ -13,6 +13,7 @@ import com.xiaozhi.common.web.ApiResponse;
 import com.xiaozhi.common.web.ResultStatus;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -31,6 +32,7 @@ import org.springframework.web.context.request.async.AsyncRequestTimeoutExceptio
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import lombok.extern.slf4j.Slf4j;
 /**
@@ -39,6 +41,14 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /**
+     * 与 {@code application-common.yml} 的 {@code spring.servlet.multipart.max-file-size} 同源，
+     * 只用于把真实上限写进报错文案 —— 写死一个 20MB/50MB 容易和配置漂移。
+     */
+    @Value("${spring.servlet.multipart.max-file-size:50MB}")
+    private String maxMultipartFileSize = "50MB";
+
     @ExceptionHandler(UsernameNotFoundException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleUsernameNotFoundException(UsernameNotFoundException e, WebRequest request) {
@@ -178,6 +188,17 @@ public class GlobalExceptionHandler {
         // 同上，"MCP服务代码重复"、"该手机号、邮箱或用户名已被注册"、"不能禁用当前登录账号" 都靠这条透传
         log.warn("业务状态冲突: {}", e.getMessage(), e);
         return ApiResponse.conflict(defaultMessage(e.getMessage(), "当前状态不允许此操作"));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
+    public ApiResponse<Void> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException e, WebRequest request) {
+        // 容器层（spring.servlet.multipart.max-file-size）在业务校验之前就拒了。
+        // 不单独接住的话会落到 RuntimeException 那条，前端看到 500「业务异常」，
+        // 用户完全不知道该把文件改小 —— 最容易被当成「服务坏了」的一类报错。
+        log.warn("上传超过容器上限: {}", e.getMessage());
+        return ApiResponse.error(HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                "上传文件超过服务器上限（" + maxMultipartFileSize + "），请压缩或拆分后再传");
     }
 
     @ExceptionHandler(ConfirmRequiredException.class)

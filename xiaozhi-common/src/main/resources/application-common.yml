@@ -57,11 +57,16 @@ spring:
       check-template-location: false
 
   # 文件上传配置
+  # 上限按「业务层最大的那个」定，不留 2~5 倍空档：
+  #   StorageService.DEFAULT_MAX_SIZE = 50MB（/api/file/upload、/api/music/music 用这个）
+  #   知识库更紧，只有 20MB（DocumentFormats.MAX_UPLOAD_BYTES），
+  #   但它由 KnowledgeUploadSizeFilter 按 Content-Length 在解析前单独拦，不靠这里。
+  # max-request-size 要高过 max-file-size：multipart 的分隔符和各字段头也要算进去。
   servlet:
     multipart:
       enabled: true
-      max-file-size: 100MB
-      max-request-size: 100MB
+      max-file-size: 50MB
+      max-request-size: 55MB
 
   # 虚拟线程
   threads:
