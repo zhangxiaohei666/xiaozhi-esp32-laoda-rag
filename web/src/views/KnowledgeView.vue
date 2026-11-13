@@ -173,6 +173,7 @@
           <a-upload
             :file-list="fileList"
             :max-count="1"
+            :accept="fileValidators.knowledge.accept"
             :before-upload="beforeUpload"
             @remove="onRemoveFile"
           >
@@ -282,6 +283,7 @@ import {
 } from '@/services/knowledge'
 import { useTable } from '@/composables/useTable'
 import TableEmptyState from '@/components/TableEmptyState.vue'
+import { fileValidators } from '@/utils/fileValidators'
 
 const { t } = useI18n()
 
@@ -407,15 +409,17 @@ function openUpload() {
   uploadVisible.value = true
 }
 
-/** 只收下文件交给后面的「开始入库」，不在这里发请求：第二步需要用户确认归类与可见性 */
+/**
+ * 只收下文件交给后面的「开始入库」，不在这里发请求：入库前要等用户确认归类与可见性。
+ *
+ * 格式与大小都走 `fileValidators.knowledge`，与 `:accept` 共用同一份扩展名清单 ——
+ * 不在视图里写字面量，避免"选择器放行了、校验这一步又拦掉"。
+ */
 function beforeUpload(file: File) {
-  const ext = (file.name.split('.').pop() || '').toLowerCase()
-  if (!['txt', 'md', 'markdown'].includes(ext)) {
-    message.error(t('knowledge.onlyTextTip'))
-    return false
-  }
-  if (file.size > 20 * 1024 * 1024) {
-    message.error(t('knowledge.tooLargeTip'))
+  const result = fileValidators.knowledge.validate(file)
+  if (result !== true) {
+    // 校验器只返回 i18n key，翻译与展示留给调用方（与音频/图片上传一致）
+    message.error(t(result))
     return false
   }
   selectedFile.value = file

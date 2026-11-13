@@ -7,8 +7,10 @@
 import {
   ALLOWED_AUDIO_TYPES,
   ALLOWED_IMAGE_TYPES,
+  ALLOWED_KNOWLEDGE_EXTENSIONS,
   MAX_AUDIO_SIZE,
-  MAX_IMAGE_SIZE
+  MAX_IMAGE_SIZE,
+  MAX_KNOWLEDGE_SIZE
 } from '@/constants/api'
 
 /**
@@ -82,6 +84,32 @@ export const fileValidators = {
 
       if (file.size >= MAX_IMAGE_SIZE) {
         return 'common.imageSizeLimit'
+      }
+
+      return true
+    }
+  } as FileValidator,
+
+  /**
+   * 知识库文档验证器（20MB 限制）
+   *
+   * 与音频/图片的区别：只按扩展名判，不看 MIME —— `.md` 的 MIME 在不同浏览器
+   * 可能是 `text/markdown`、`text/x-markdown` 或空串，按 MIME 判会误杀正常文件。
+   *
+   * 大小用严格大于（`> MAX`）而不是上面两档的 `>=`：后端 `DocumentFormats`
+   * 就是 `byteLength > MAX_UPLOAD_BYTES` 才拒，正好 20MB 是放行的。
+   * 前端口径跟着后端走，不要为了"看起来整齐"把边界文件在界面就拦掉。
+   */
+  knowledge: {
+    accept: ALLOWED_KNOWLEDGE_EXTENSIONS.join(','),
+
+    validate: (file: File) => {
+      if (!hasExtension(file, ALLOWED_KNOWLEDGE_EXTENSIONS)) {
+        return 'knowledge.onlyTextTip'
+      }
+
+      if (file.size > MAX_KNOWLEDGE_SIZE) {
+        return 'knowledge.tooLargeTip'
       }
 
       return true

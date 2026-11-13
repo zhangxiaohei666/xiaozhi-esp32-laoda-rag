@@ -30,6 +30,23 @@ export const MAX_IMAGE_SIZE = 2 * 1024 * 1024
 export const MAX_AUDIO_SIZE = 10 * 1024 * 1024
 
 /**
+ * 知识库文档大小上限（20MB），与后端 `DocumentFormats.MAX_UPLOAD_BYTES` 一致。
+ *
+ * <p>注意与上面两档的语义差别：音频/图片用「不含上界」（`size >= 阈值` 即拒），
+ * 知识库后端用的是严格大于（`byteLength > 阈值` 才拒），所以这里也按"正好 20MB 放行"处理 ——
+ * 前端口径跟着后端走，不要为了"看起来一致"把 20MB 的文件在界面就拦掉。
+ */
+export const MAX_KNOWLEDGE_SIZE = 20 * 1024 * 1024
+
+/**
+ * 知识库允许的扩展名，与后端 `DocumentFormats.VERIFIED` 保持一致。
+ *
+ * <p>只按扩展名判、不看 MIME：`.md` 的 MIME 在不同浏览器是 `text/markdown`、
+ * `text/x-markdown` 或空串，按 MIME 判会误杀正常文件。
+ */
+export const ALLOWED_KNOWLEDGE_EXTENSIONS = ['.txt', '.md', '.markdown']
+
+/**
  * 图片 / 音频文件上传的 MIME 白名单
  * 供 utils/fileValidators.ts 的 image / audio 校验器使用；浏览器给不出这些 MIME 时
  * 校验器会回退按扩展名判定，两者是「或」的关系，不会互相顶替

@@ -924,7 +924,7 @@ export default {
         docList: 'Documents',
         upload: 'Upload',
         uploadTitle: 'Upload to knowledge base',
-        uploadTip: 'Two steps: the file is first stored in a staging area, then parsed, chunked and embedded into the vector store once you confirm category and visibility. A failed ingestion can retry step two without re-uploading.',
+        uploadTip: 'One request: the file is parsed, chunked and embedded right away — there is no staging step. A failed ingestion has to be re-uploaded (no original copy is kept).',
         selectFile: 'Select file',
         chooseFile: 'Choose file',
         fileTip: 'Only txt / md / markdown are supported, up to 20MB. Markdown is best: it can be chunked by heading level, which improves retrieval.',

@@ -922,7 +922,7 @@ export default {
         docList: '文档列表',
         upload: '上传资料',
         uploadTitle: '上传资料到知识库',
-        uploadTip: '分两步：先把文件传到待入库区（只落盘），确认归类与可见性后再解析、切块并写入向量库。入库失败可只重试第二步，不用重新上传。',
+        uploadTip: '一个请求完成：上传后立即解析、切块并写入向量库，没有“先传暂存区再确认”那一步。入库失败需要重新上传（原文不会保留）。',
         selectFile: '选择文件',
         chooseFile: '选择文件',
         fileTip: '目前只支持 txt / md / markdown，单个不超过 20MB。Markdown 最好：能按标题层级切块，检索更准。',

@@ -106,3 +106,40 @@ describe('fileValidators.image', () => {
       .toBe(true)
   })
 })
+
+describe('fileValidators.knowledge', () => {
+  it('accept 串与后端白名单一致（txt / md / markdown）', () => {
+    expect(fileValidators.knowledge.accept).toBe('.txt,.md,.markdown')
+  })
+
+  it('接受三种扩展名，扩展名大小写不敏感', () => {
+    for (const name of ['a.txt', 'a.md', 'a.markdown', 'A.MD', 'A.TXT']) {
+      expect(fileValidators.knowledge.validate(createMockFile(name, 1024, ''))).toBe(true)
+    }
+  })
+
+  it('PDF / Word / 无扩展名一律拒绝（与后端 DocumentFormats.VERIFIED 对齐）', () => {
+    for (const name of ['a.pdf', 'a.docx', 'README', 'a.']) {
+      expect(fileValidators.knowledge.validate(createMockFile(name, 1024, '')))
+        .toBe('knowledge.onlyTextTip')
+    }
+  })
+
+  it('不看 MIME：浏览器给空串或奇怪的 md MIME 都不影响判定', () => {
+    // .md 的 MIME 在不同浏览器是 text/markdown、text/x-markdown 或空串
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', 1024, 'text/markdown'))).toBe(true)
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', 1024, 'text/x-markdown'))).toBe(true)
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', 1024, ''))).toBe(true)
+    // 反过来：扩展名不对时，MIME 看着像文本也要拒
+    expect(fileValidators.knowledge.validate(createMockFile('a.pdf', 1024, 'text/plain')))
+      .toBe('knowledge.onlyTextTip')
+  })
+
+  it('20MB 边界与后端一致：正好 20MB 放行，多 1 字节才拒', () => {
+    const limit = 20 * 1024 * 1024
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', limit, ''))).toBe(true)
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', limit + 1, '')))
+      .toBe('knowledge.tooLargeTip')
+    expect(fileValidators.knowledge.validate(createMockFile('a.md', 0, ''))).toBe(true)
+  })
+})
