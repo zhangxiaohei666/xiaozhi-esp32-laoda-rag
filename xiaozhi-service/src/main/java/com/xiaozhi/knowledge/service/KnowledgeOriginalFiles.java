@@ -72,7 +72,7 @@ public class KnowledgeOriginalFiles {
      * 把原文写到 {@code <root>/<docId>-<安全文件名>}，返回<b>相对 root 的路径</b>
      * （形如 {@code 3-图书馆借阅规则.md}），直接写进 {@code sys_knowledge_doc.filePath}。
      *
-     * <p>用 {@code REPLACE_EXISTING} 的语义：同一 docId 重复入库（改内容重传）时覆盖旧文件，
+     * <p>用 {@code REPLACE_EXISTING} 的语义：同一 docId 重复入库（<b>内容完全相同</b>的重传，或只改了归类）时覆盖旧文件，
      * 不会在磁盘上留两份。
      *
      * @param docId 账本主键，落盘时必须已经存在

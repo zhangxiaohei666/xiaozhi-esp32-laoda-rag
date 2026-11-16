@@ -180,12 +180,20 @@ public class KnowledgeIngestAppService {
     /**
      * 找到或创建账本记录，返回它的 id。
      *
-     * <p>三种情况：
+     * <p><b>去重维度是「内容」，不是「文件名」</b>（唯一键 {@code uk_owner_hash(userId, contentHash)}，
+     * contentHash = sha256(字节数|md5(内容))，不含文件名）。三种情况：
      * <ol>
-     *   <li>该用户已有同内容文档 → 复用 id，重置为 processing（支持"改完内容重新上传"）</li>
-     *   <li>没有 → 新建（自增 id 回填到入参对象）</li>
+     *   <li>该用户已有<b>同内容</b>文档 → 复用 id，重置为 processing
+     *       （原样重传、或只改归类/可见性/文件名时走这条）</li>
+     *   <li>没有 → 新建（自增 id 回填到入参对象）。<b>改了正文就属于这一条</b></li>
      *   <li>插入时撞唯一键（并发上传同一文件）→ 重新查一次再复用</li>
      * </ol>
+     *
+     * <p>⚠️ <b>"改完正文再上传"不等于"替换旧文档"</b>：内容变了 → contentHash 变了 →
+     * 查不到旧记录 → 新建一条文档、一个新 docId。旧文档的记录、分块、Qdrant 向量
+     * <b>全部原样保留</b>（{@code DocumentIngestService} 里"先清旧向量"那步是按
+     * <b>当前 docId</b> 过滤的，新 id 下没有可删的东西）。结果：同一篇资料在库里
+     * 存着新旧两版，检索时两版都可能命中。要真正替换，必须先删旧文档再上传。
      */
     private Long resolveDocId(int ownerId, String contentHash, String fileName,
                               KnowledgeCreateReq req, String scope,
