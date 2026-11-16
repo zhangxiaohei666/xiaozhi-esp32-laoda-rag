@@ -189,6 +189,24 @@ xiaozhi:
       # 设 1 = 严格去重；设 ≥ top-k = 等于不去重（旧行为）。
       max-per-doc: ${RAG_MAX_PER_DOC:2}
 
+    rerank:
+      # 重排（UP-17，两段式检索第二段）：召回调宽 → DashScope gte-rerank-v2 精排 → 取前 N 条。
+      # 默认关：关=代码路径与历史基线逐位一致；A/B 时运行侧设 RAG_RERANK_ENABLED=true（env+重启）。
+      enabled: ${RAG_RERANK_ENABLED:false}
+      # 重排模型（SDK com.alibaba.dashscope.rerank.TextReRank）。
+      # qwen3-rerank 已验证可用，但冒烟数据不优于默认，留作备选。
+      model: ${RAG_RERANK_MODEL:gte-rerank-v2}
+      # 召回条数：只影响重排开启时的第一段。实测 20 条约 3~4k token，远低于端点 30k 上限。
+      recall-k: ${RAG_RERANK_RECALL_K:20}
+      # 召回阈值：仅为多给重排候选而放宽。
+      # ★ 拒答线仍是上面 retrieval.similarity-threshold=0.50，不随这里放宽 ——
+      #   实测垃圾问题分数 0.38~0.49，若拿 0.35 当拒答线会全部穿透。
+      recall-threshold: ${RAG_RERANK_RECALL_THRESHOLD:0.35}
+      # 重排后注入条数（计划口径 top3~5，默认与 top-k 对齐）。
+      top-k: ${RAG_RERANK_TOP_K:5}
+      # 单次重排超时：超时退回基线路径，绝不让重排拖住对话。
+      timeout-ms: ${RAG_RERANK_TIMEOUT_MS:2000}
+
     knowledge:
       # 知识库原文落盘目录。
       #   留空 → 自动取 ${xiaozhi.runtime.data-dir}/knowledge（推荐，一处配置管全部文件）

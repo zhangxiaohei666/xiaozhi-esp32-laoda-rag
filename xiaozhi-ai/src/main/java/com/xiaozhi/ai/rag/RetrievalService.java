@@ -43,6 +43,11 @@ import java.util.Map;
  *   <li><b>缓存</b>：检索词+userId+topK+阈值 做 SHA-256 键，非空结果回放 30 分钟（Redis {@code rag:qc:*}），
  *       命中省一次 embedding + 一次 Qdrant</li>
  * </ul>
+ *
+ * <p>2026-11-17 顺位 3（UP-17）加<b>两段式检索</b>（{@code xiaozhi.rag.rerank}，默认关）：
+ * 召回调宽到 0.35@20 → <b>拒答门仍按 0.50 余弦判</b>（门外收紧，垃圾问题零重排成本）→
+ * {@link RagRerankService} 用 gte-rerank-v2 精排 → 每篇限额在<b>精排后</b>套用。
+ * 任何失败退回与基线<b>逐位等价</b>的路径（按 0.50 重过滤 + 原序）——rerank 挂了 = 今天没上 rerank。
  */
 @Slf4j
 @Component
@@ -136,6 +141,24 @@ public class RetrievalService {
     /** 同一篇文档最多贡献几条命中；1=严格去重，topK=不去重 */
     private final int maxPerDoc;
 
+    /** 重排客户端；null = 重排未装配（单测），语义上等价于关 */
+    private final RagRerankService rerankService;
+
+    /** 重排开关快照：rerankService 已装配 且 xiaozhi.rag.rerank.enabled=true（构造时定死，改参 env+重启） */
+    private final boolean rerankEnabled;
+
+    /** 召回条数（仅重排开启时使用），受 MAX_FETCH_K 封顶 */
+    private final int rerankRecallK;
+
+    /** 召回阈值（仅重排开启时使用）；拒答线仍是上面的 threshold，两者职责不同不可混用 */
+    private final double rerankRecallThreshold;
+
+    /** 重排后注入条数（计划口径 top3~5），与 topK 分开配便于 A/B */
+    private final int rerankTopK;
+
+    /** 重排模型名：进缓存键指纹，换模型旧缓存自动失效 */
+    private final String rerankModel;
+
     /**
      * 查询缓存客户端。仓库惯例：普通缓存走 Lettuce {@code StringRedisTemplate}，
      * Redisson 只管锁；bean 由 spring-boot-starter-data-redis 自动装配（RateLimitInterceptor 同款注入）。
@@ -160,14 +183,23 @@ public class RetrievalService {
     }
 
     public RetrievalService(QdrantRagService ragService, RagProperties properties,
-                            StringRedisTemplate stringRedisTemplate) {
+                            StringRedisTemplate stringRedisTemplate, RagRerankService rerankService) {
         this.ragService = ragService;
         this.topK = properties.getRetrieval().getTopK();
         this.threshold = properties.getRetrieval().getSimilarityThreshold();
         this.maxPerDoc = properties.getRetrieval().getMaxPerDoc();
         this.stringRedisTemplate = stringRedisTemplate;
-        log.info("RAG 检索配置: topK={}, 相似度阈值={}, 每篇最多 {} 条, 查询缓存 {}（来自 xiaozhi.rag.retrieval）",
-                topK, threshold, maxPerDoc, stringRedisTemplate == null ? "未装配" : CACHE_TTL.toString());
+        this.rerankService = rerankService;
+        RagProperties.Rerank rerank = properties.getRerank();
+        this.rerankEnabled = rerankService != null && rerank.isEnabled();
+        this.rerankRecallK = Math.min(rerank.getRecallK(), MAX_FETCH_K);
+        this.rerankRecallThreshold = rerank.getRecallThreshold();
+        this.rerankTopK = rerank.getTopK();
+        this.rerankModel = rerank.getModel();
+        log.info("RAG 检索配置: topK={}, 相似度阈值={}, 每篇最多 {} 条, 查询缓存 {}, rerank={}（模型 {}，召回 {}@{}，取 top{}）",
+                topK, threshold, maxPerDoc,
+                stringRedisTemplate == null ? "未装配" : CACHE_TTL.toString(),
+                rerankEnabled ? "开" : "关", rerankModel, rerankRecallK, rerankRecallThreshold, rerankTopK);
     }
 
     public int getTopK() {
@@ -176,6 +208,28 @@ public class RetrievalService {
 
     public double getThreshold() {
         return threshold;
+    }
+
+    // ── rerank 实际生效值回读（调试口用：读回实际值，不信日志不信推测）──
+
+    public boolean isRerankEnabled() {
+        return rerankEnabled;
+    }
+
+    public String getRerankModel() {
+        return rerankModel;
+    }
+
+    public int getRerankRecallK() {
+        return rerankRecallK;
+    }
+
+    public double getRerankRecallThreshold() {
+        return rerankRecallThreshold;
+    }
+
+    public int getRerankTopK() {
+        return rerankTopK;
     }
 
     /**
@@ -232,7 +286,20 @@ public class RetrievalService {
         return documents;
     }
 
-    /** 真正打向量库的路径：门控与缓存都放行后才会走到这里（原来 search 的主体） */
+    /**
+     * 真正打向量库的路径：门控与缓存都放行后才会走到这里（原来 search 的主体）。
+     *
+     * <p>两条互斥路径：
+     * <ul>
+     *   <li><b>基线</b>（rerank 关，或开着但重排失败后的降级）：按拒答线 0.50 查 fetchK=10 → 原序限额 top5。
+     *       rerank 开着时的降级路径与这里<b>逐位等价</b>（含 fetchK 截断）——
+     *       "rerank 挂了"必须等价于"今天没上 rerank"，而不是退到 0.35 池的原序把垃圾带进 top5。</li>
+     *   <li><b>两段式</b>（rerank 开）：召回调宽 0.35@recallK → 拒答门（候选无一 ≥0.50 则整体不答，
+     *       且拒答判定在重排调用<b>之前</b>，垃圾问题零重排成本）→ 精排 → 每篇限额在<b>精排后</b>套用
+     *       （先保证排序对，再保多样性）。rerank 分数只进 metadata，{@code Document.score} 仍是余弦
+     *       —— 评估 top1 均分口径的锚不动。</li>
+     * </ul>
+     */
     private List<Document> doSearch(String question, Integer userId) {
         try {
             FilterExpressionBuilder b = new FilterExpressionBuilder();
@@ -241,19 +308,60 @@ public class RetrievalService {
                     ? b.eq("scope", SCOPE_SHARED).build()
                     : b.or(b.eq("user_id", userId), b.eq("scope", SCOPE_SHARED)).build();
 
-            // 多取一些：下面要按「每篇文档最多 N 条」收敛，取回数不够就凑不满 topK
-            int fetchK = Math.min(Math.max(topK, topK * Math.max(1, maxPerDoc)), MAX_FETCH_K);
+            if (!rerankEnabled) {
+                // ── 基线路径：与合入前逐位一致（零回归兜底）──
+                int fetchK = Math.min(Math.max(topK, topK * Math.max(1, maxPerDoc)), MAX_FETCH_K);
+                SearchRequest request = SearchRequest.builder()
+                        .query(question)
+                        .topK(fetchK)
+                        .similarityThreshold(threshold)
+                        .filterExpression(filter)
+                        .build();
+                List<Document> documents = ragService.vectorStore().similaritySearch(request);
+                if (documents == null || documents.isEmpty()) {
+                    return List.of();
+                }
+                return limitPerDocument(documents, topK, maxPerDoc);
+            }
+
+            // ── 两段式第一段：召回调宽，只为多给重排一些候选 ──
             SearchRequest request = SearchRequest.builder()
                     .query(question)
-                    .topK(fetchK)
-                    .similarityThreshold(threshold)
+                    .topK(rerankRecallK)
+                    .similarityThreshold(rerankRecallThreshold)
                     .filterExpression(filter)
                     .build();
-            List<Document> documents = ragService.vectorStore().similaritySearch(request);
-            if (documents == null || documents.isEmpty()) {
+            List<Document> candidates = ragService.vectorStore().similaritySearch(request);
+            if (candidates == null || candidates.isEmpty()) {
                 return List.of();
             }
-            return limitPerDocument(documents, topK, maxPerDoc);
+            // 拒答门：候选里连一条 ≥ 拒答线的都没有 → 这个问题整体不答。
+            // 0.50 是 35 条评估集五档扫描校准出来的（垃圾天花板 0.49 < 0.50 < 正确地板 0.6058），
+            // 召回调宽到 0.35 只给"过门的问题"扩候选池，绝不放垃圾进 prompt。
+            double best = candidates.stream()
+                    .mapToDouble(d -> d.getScore() == null ? 0.0 : d.getScore())
+                    .max().orElse(0.0);
+            if (best < threshold) {
+                return List.of();
+            }
+            // ── 两段式第二段：精排（返回 null = 失败，走降级）──
+            List<Document> reranked = rerankService.rerank(question, candidates);
+            if (reranked == null) {
+                // 降级语义精确到 fetchK：按拒答线重过滤 + 截到 fetchK + 原序限额
+                int fetchK = Math.min(Math.max(topK, topK * Math.max(1, maxPerDoc)), MAX_FETCH_K);
+                List<Document> baseline = new ArrayList<>(Math.min(fetchK, candidates.size()));
+                for (Document document : candidates) {
+                    if (baseline.size() >= fetchK) {
+                        break;
+                    }
+                    if (document.getScore() != null && document.getScore() >= threshold) {
+                        baseline.add(document);
+                    }
+                }
+                return limitPerDocument(baseline, topK, maxPerDoc);
+            }
+            // 精排后的顺序为准；rerank 分数已在 metadata.rerank_score，Document.score 仍是余弦
+            return limitPerDocument(reranked, rerankTopK, maxPerDoc);
         } catch (Exception e) {
             log.warn("RAG 检索失败，本轮不注入参考资料: {}", brief(e));
             return List.of();
@@ -508,6 +616,8 @@ public class RetrievalService {
             item.put("heading", metaOf(document, "heading", ""));
             item.put("source", metaOf(document, "source", ""));
             item.put("docId", metaOf(document, "doc_id", ""));
+            // rerank 分数：metadata 缺这个键 = 该条没经过重排（rerank 关 / 降级 / 降级后写入的缓存回放）
+            item.put("rerankScore", metaRerankScore(document));
             String text = safeText(document);
             item.put("snippet", text.length() > 300 ? text.substring(0, 300) + "…" : text);
             hits.add(item);
@@ -525,6 +635,15 @@ public class RetrievalService {
             return text.isEmpty() ? fallback : text;
         } catch (Exception e) {
             return fallback;
+        }
+    }
+
+    /** rerank 分数按原始类型取（Double），不做字符串转换；没有/取不到就是 null */
+    private static Object metaRerankScore(Document document) {
+        try {
+            return document.getMetadata().get(RagRerankService.METADATA_RERANK_SCORE);
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -601,10 +720,11 @@ public class RetrievalService {
     // ── 查询缓存（N-04）────────────────────────────────────────────────────
 
     /**
-     * 缓存键：{@code rag:qc:} + SHA-256(检索词|userId|topK|阈值)。
+     * 缓存键：{@code rag:qc:} + SHA-256(检索词|userId|topK|阈值|rerank 指纹)。
      *
      * <p>检索词是<b>改写后</b>的 —— "那周日呢"在不同上轮下会改写成不同的检索词，
-     * 键跟着变，不会跨上轮串缓存。topK/阈值入键：改配置后旧缓存自动失效，不会拿旧参数的命中充数。
+     * 键跟着变，不会跨上轮串缓存。topK/阈值/rerank 指纹入键：改配置后旧缓存自动失效，
+     * 不会拿旧参数的命中充数 —— A/B 切 rerank 开关时尤其关键，串了味评估数据全废。
      *
      * @return 生成失败或未装配 Redis（单测传 null）时返回 null，调用方按"无缓存"处理
      */
@@ -613,13 +733,28 @@ public class RetrievalService {
             return null;
         }
         try {
-            String raw = question + "|" + (userId == null ? "-" : userId) + "|" + topK + "|" + threshold;
+            String raw = question + "|" + (userId == null ? "-" : userId) + "|" + topK + "|" + threshold
+                    + "|" + rerankFingerprint(rerankEnabled, rerankModel, rerankRecallK, rerankRecallThreshold, rerankTopK);
             return CACHE_KEY_PREFIX + HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
             log.warn("RAG 缓存键生成失败，本轮直查: {}", brief(e));
             return null;
         }
+    }
+
+    /**
+     * rerank 状态的缓存键指纹：关 = {@code off}，开 = {@code 模型:召回K:召回阈值:取topK}。
+     *
+     * <p>为什么必须入键：rerank 开/关（以及任一参数变化）会改变同一问题的结果集，
+     * 不入键的话 A/B 切换后会把上一状态的缓存直接回放 —— 评估数据全是串味的。
+     * 关闭态固定写 {@code off} 而不是空串：让历史键彻底变样，30 分钟 TTL 内也不会误命中。
+     */
+    static String rerankFingerprint(boolean enabled, String model, int recallK, double recallThreshold, int topK) {
+        if (!enabled) {
+            return "off";
+        }
+        return model + ":" + recallK + ":" + recallThreshold + ":" + topK;
     }
 
     /** 命中结果 → JSON 数组（只存 score/text/metadata 三元组） */

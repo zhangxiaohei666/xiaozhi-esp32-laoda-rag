@@ -39,7 +39,7 @@ class RetrievalServiceSecurityTest {
         ArgumentCaptor<SearchRequest> captor = ArgumentCaptor.forClass(SearchRequest.class);
         when(store.similaritySearch(captor.capture())).thenReturn(List.of());
 
-        RetrievalService service = new RetrievalService(rag, new RagProperties(), null);
+        RetrievalService service = new RetrievalService(rag, new RagProperties(), null, null);
         service.search("图书馆几点开门", userId);
 
         SearchRequest request = captor.getValue();
@@ -82,7 +82,7 @@ class RetrievalServiceSecurityTest {
         QdrantRagService rag = mock(QdrantRagService.class);
         when(rag.isEnabled()).thenReturn(false);
 
-        RetrievalService service = new RetrievalService(rag, new RagProperties(), null);
+        RetrievalService service = new RetrievalService(rag, new RagProperties(), null, null);
         assertThat(service.search("图书馆几点开门", 42)).isEmpty();
 
         // isEnabled=false 时连 vectorStore() 都不该碰
@@ -93,7 +93,7 @@ class RetrievalServiceSecurityTest {
     @DisplayName("空问题不发请求")
     void blankQuestionReturnsEmpty() {
         QdrantRagService rag = mock(QdrantRagService.class);
-        RetrievalService service = new RetrievalService(rag, new RagProperties(), null);
+        RetrievalService service = new RetrievalService(rag, new RagProperties(), null, null);
 
         assertThat(service.search("", 42)).isEmpty();
         assertThat(service.search("   ", 42)).isEmpty();

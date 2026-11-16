@@ -327,12 +327,17 @@ public class KnowledgeController extends BaseController {
         return resp;
     }
 
-    /** 检索结果 → 出参（把实际生效的 topK / 阈值一并带出，便于判断"为什么没命中"）。 */
+    /** 检索结果 → 出参（把实际生效的 topK / 阈值 / rerank 参数一并带出，便于判断"为什么没命中"）。 */
     private KnowledgeSearchResp toSearchResp(String query, List<Map<String, Object>> hits) {
         KnowledgeSearchResp resp = new KnowledgeSearchResp();
         resp.setQuery(query);
         resp.setTopK(retrievalService.getTopK());
         resp.setThreshold(retrievalService.getThreshold());
+        resp.setRerankEnabled(retrievalService.isRerankEnabled());
+        resp.setRerankModel(retrievalService.getRerankModel());
+        resp.setRerankRecallK(retrievalService.getRerankRecallK());
+        resp.setRerankRecallThreshold(retrievalService.getRerankRecallThreshold());
+        resp.setRerankTopK(retrievalService.getRerankTopK());
         List<KnowledgeSearchResp.Hit> list = new java.util.ArrayList<>(hits == null ? 0 : hits.size());
         if (hits != null) {
             for (Map<String, Object> h : hits) {
@@ -343,6 +348,7 @@ public class KnowledgeController extends BaseController {
                 hit.setSource((String) h.get("source"));
                 hit.setDocId((String) h.get("docId"));
                 hit.setSnippet((String) h.get("snippet"));
+                hit.setRerankScore(h.get("rerankScore") instanceof Number n ? n.doubleValue() : null);
                 list.add(hit);
             }
         }
