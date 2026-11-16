@@ -1,5 +1,6 @@
 package com.xiaozhi.ai.rag;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaozhi.common.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 
@@ -7,11 +8,15 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +34,15 @@ import java.util.Map;
  * 让模型照常回答，绝不能让一次 RAG 故障把整轮对话打断。
  *
  * <p>环境变量：RAG_TOP_K（默认 5）、RAG_SIMILARITY_THRESHOLD（默认 0.50）
+ *
+ * <p>2026-11-17 RAG 升级轮在打向量库前加了三层（实测背景见 docs/RAG升级.md）：
+ * <ul>
+ *   <li><b>门控</b>：寒暄/纯标点跳过检索（{@link RagQueryRewrite#isSmallTalk}），省一次 embedding + 一次 Qdrant</li>
+ *   <li><b>改写</b>：多轮指代短句拼上轮问句 + 同义词扩展（{@link RagQueryRewrite#retrievalQuery}），
+ *       只改检索词、不改喂给模型的原句</li>
+ *   <li><b>缓存</b>：检索词+userId+topK+阈值 做 SHA-256 键，非空结果回放 30 分钟（Redis {@code rag:qc:*}），
+ *       命中省一次 embedding + 一次 Qdrant</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -122,12 +136,38 @@ public class RetrievalService {
     /** 同一篇文档最多贡献几条命中；1=严格去重，topK=不去重 */
     private final int maxPerDoc;
 
-    public RetrievalService(QdrantRagService ragService, RagProperties properties) {
+    /**
+     * 查询缓存客户端。仓库惯例：普通缓存走 Lettuce {@code StringRedisTemplate}，
+     * Redisson 只管锁；bean 由 spring-boot-starter-data-redis 自动装配（RateLimitInterceptor 同款注入）。
+     * 单测传 null = 不启用缓存，直查向量库。
+     */
+    private final StringRedisTemplate stringRedisTemplate;
+
+    /** 缓存键前缀；全量失效 = Redis 里删 {@code rag:qc:*}（验证矩阵回归前清一次） */
+    private static final String CACHE_KEY_PREFIX = "rag:qc:";
+
+    /**
+     * 命中结果回放时长。知识库低频更新，30 分钟内的重复问题直接回放；
+     * 文档删除/重传后的陈旧命中最多存活这么久 —— 代价已知且可接受。
+     */
+    private static final Duration CACHE_TTL = Duration.ofMinutes(30);
+
+    /** 缓存序列化：只走本类私有的 DTO，与全局 ObjectMapper 配置互不污染 */
+    private static final ObjectMapper CACHE_JSON = new ObjectMapper();
+
+    /** 缓存条目：瘦三元组。Document 的 id/formatter 等其余字段回放时重建，不入缓存 */
+    private record CachedHit(Double score, String text, Map<String, Object> metadata) {
+    }
+
+    public RetrievalService(QdrantRagService ragService, RagProperties properties,
+                            StringRedisTemplate stringRedisTemplate) {
         this.ragService = ragService;
         this.topK = properties.getRetrieval().getTopK();
         this.threshold = properties.getRetrieval().getSimilarityThreshold();
         this.maxPerDoc = properties.getRetrieval().getMaxPerDoc();
-        log.info("RAG 检索配置: topK={}, 相似度阈值={}, 每篇最多 {} 条（来自 xiaozhi.rag.retrieval）", topK, threshold, maxPerDoc);
+        this.stringRedisTemplate = stringRedisTemplate;
+        log.info("RAG 检索配置: topK={}, 相似度阈值={}, 每篇最多 {} 条, 查询缓存 {}（来自 xiaozhi.rag.retrieval）",
+                topK, threshold, maxPerDoc, stringRedisTemplate == null ? "未装配" : CACHE_TTL.toString());
     }
 
     public int getTopK() {
@@ -153,6 +193,47 @@ public class RetrievalService {
         if (!ragService.isEnabled()) {
             return List.of();
         }
+        // 门控：整句寒暄/纯标点不值得花一次 embedding + 一次 Qdrant，直接跳过。
+        // 只挡"整句就是寒暄"的（归一化后精确匹配表），"你好，图书馆几点开门"这类复合句照常检索（宁漏勿杀）。
+        // 这里再挡一次是为了覆盖 searchForDebug 等不带改写的调用方。
+        if (RagQueryRewrite.isSmallTalk(question)) {
+            log.info("RAG 门控：'{}' 属寒暄/空问，跳过检索", briefQ(question));
+            return List.of();
+        }
+        // 查询缓存：同一检索词 + userId + topK + 阈值，30 分钟内直接回放
+        String cacheKey = cacheKey(question, userId);
+        if (cacheKey != null) {
+            try {
+                long start = System.nanoTime();
+                String cached = stringRedisTemplate.opsForValue().get(cacheKey);
+                if (cached != null) {
+                    List<Document> hits = fromCacheJson(cached);
+                    if (!hits.isEmpty()) {
+                        log.info("RAG 缓存命中：{} 条，耗时 {} ms", hits.size(), elapsedMs(start));
+                        return hits;
+                    }
+                }
+            } catch (Exception e) {
+                // 红线：缓存任何异常都不许影响对话，降级直查
+                log.warn("RAG 缓存读取失败，直查向量库: {}", brief(e));
+            }
+        }
+        long start = System.nanoTime();
+        List<Document> documents = doSearch(question, userId);
+        log.info("RAG 实检索：'{}' 命中 {} 条，耗时 {} ms", briefQ(question), documents.size(), elapsedMs(start));
+        // 只缓存非空结果：空结果可能来自瞬时故障，缓存它会把"这一轮没查到"放大成 30 分钟
+        if (!documents.isEmpty() && cacheKey != null) {
+            try {
+                stringRedisTemplate.opsForValue().set(cacheKey, toCacheJson(documents), CACHE_TTL);
+            } catch (Exception e) {
+                log.warn("RAG 缓存写入失败，不影响本轮回答: {}", brief(e));
+            }
+        }
+        return documents;
+    }
+
+    /** 真正打向量库的路径：门控与缓存都放行后才会走到这里（原来 search 的主体） */
+    private List<Document> doSearch(String question, Integer userId) {
         try {
             FilterExpressionBuilder b = new FilterExpressionBuilder();
             // userId 缺失时只给共享资料：绝不退化成"不过滤"
@@ -374,7 +455,33 @@ public class RetrievalService {
      * @return 无命中时返回空串（调用方据此跳过注入）
      */
     public String buildInjection(String question, Integer userId) {
-        String context = buildContext(question, userId);
+        return buildInjection(question, userId, null);
+    }
+
+    /**
+     * 拼出完整的「参考资料 system 消息」：边界标记 + 资料正文 + 回答规则（带上一轮问句）。
+     *
+     * <p>在 2 参版本的基础上多两步，都在打向量库<b>之前</b>：
+     * <ol>
+     *   <li><b>门控（先于改写）</b>：寒暄直接跳过 —— 必须在改写之前对原句判断，
+     *       否则"嗯"这类寒暄短句会先被拼上上轮问句、变成看起来有效的检索词。</li>
+     *   <li><b>改写</b>：多轮指代补全 + 同义词扩展（{@link RagQueryRewrite#retrievalQuery}），
+     *       只作用于"送 embedding 的检索词"，喂给模型的问题仍是用户原句。</li>
+     * </ol>
+     *
+     * @param prevQuestion 上一条用户问句（裸文本，来自 {@code conversation.rawMessages()}）；没有传 null
+     * @return 无命中时返回空串（调用方据此跳过注入）
+     */
+    public String buildInjection(String question, Integer userId, String prevQuestion) {
+        if (question == null || question.isBlank()) {
+            return "";
+        }
+        if (RagQueryRewrite.isSmallTalk(question)) {
+            log.info("RAG 门控：'{}' 属寒暄/空问，跳过检索", briefQ(question));
+            return "";
+        }
+        String retrievalQuery = RagQueryRewrite.retrievalQuery(question, prevQuestion);
+        String context = buildContext(retrievalQuery, userId);
         if (context.isEmpty()) {
             return "";
         }
@@ -489,6 +596,68 @@ public class RetrievalService {
         s = s.replaceAll("\\n{3,}", "\n\n");
 
         return s.trim();
+    }
+
+    // ── 查询缓存（N-04）────────────────────────────────────────────────────
+
+    /**
+     * 缓存键：{@code rag:qc:} + SHA-256(检索词|userId|topK|阈值)。
+     *
+     * <p>检索词是<b>改写后</b>的 —— "那周日呢"在不同上轮下会改写成不同的检索词，
+     * 键跟着变，不会跨上轮串缓存。topK/阈值入键：改配置后旧缓存自动失效，不会拿旧参数的命中充数。
+     *
+     * @return 生成失败或未装配 Redis（单测传 null）时返回 null，调用方按"无缓存"处理
+     */
+    private String cacheKey(String question, Integer userId) {
+        if (stringRedisTemplate == null) {
+            return null;
+        }
+        try {
+            String raw = question + "|" + (userId == null ? "-" : userId) + "|" + topK + "|" + threshold;
+            return CACHE_KEY_PREFIX + HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            log.warn("RAG 缓存键生成失败，本轮直查: {}", brief(e));
+            return null;
+        }
+    }
+
+    /** 命中结果 → JSON 数组（只存 score/text/metadata 三元组） */
+    private String toCacheJson(List<Document> documents) throws Exception {
+        List<CachedHit> hits = new ArrayList<>(documents.size());
+        for (Document document : documents) {
+            hits.add(new CachedHit(document.getScore(), document.getText(), document.getMetadata()));
+        }
+        return CACHE_JSON.writeValueAsString(hits);
+    }
+
+    /** JSON 数组 → Document（分数经 builder().score() 完整回放，元数据按 Jackson 反序列化） */
+    private List<Document> fromCacheJson(String json) throws Exception {
+        CachedHit[] hits = CACHE_JSON.readValue(json, CachedHit[].class);
+        List<Document> documents = new ArrayList<>(hits.length);
+        for (CachedHit hit : hits) {
+            if (hit.text() == null || hit.text().isBlank()) {
+                continue;
+            }
+            Document.Builder builder = Document.builder()
+                    .text(hit.text())
+                    .metadata(hit.metadata() == null ? Map.of() : hit.metadata());
+            if (hit.score() != null) {
+                builder.score(hit.score());
+            }
+            documents.add(builder.build());
+        }
+        return documents;
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    /** 日志用：问句截断，防止一条 log 刷屏 */
+    private static String briefQ(String question) {
+        String text = question.strip();
+        return text.length() > 40 ? text.substring(0, 40) + "…" : text;
     }
 
     private static String brief(Throwable e) {

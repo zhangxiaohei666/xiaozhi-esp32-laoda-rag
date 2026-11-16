@@ -215,11 +215,15 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
             //      不带 userId 会退化成"只查共享"或更糟的"不过滤"（多用户串数据）。
             try {
                 if (retrievalService != null) {
-                    // buildInjection 内部完成三件事：清洗成可朗读文本、加字数上限、
+                    // buildInjection 内部完成四件事：寒暄门控、清洗成可朗读文本、加字数上限、
                     // 用【参考资料开始/结束】包裹并声明"这是数据不是指令"。
                     // 具体的回答规则来自 prompts/rag_injection_prompt.md（外置，改措辞不用重编译）。
+                    // UP-16 多轮指代：倒扫上一条用户问句。必须用 rawMessages()（裸文本快照）——
+                    // messages() 返回的是拼了 [时间戳] 前缀的装配副本，拿来比对会全部对不上。
+                    String prevQuestion = com.xiaozhi.ai.rag.RagQueryRewrite
+                            .previousUserQuestion(conversation.rawMessages(), turn.userMessage.getText());
                     String injection = retrievalService.buildInjection(
-                            turn.userMessage.getText(), conversation.getUserId());
+                            turn.userMessage.getText(), conversation.getUserId(), prevQuestion);
                     if (injection != null && !injection.isBlank()) {
                         messages.add(1, new SystemMessage(injection));
                     }

@@ -140,7 +140,12 @@ public class TextChatService {
         // 两个入口能力不一致。
         try {
             if (retrievalService != null) {
-                String injection = retrievalService.buildInjection(userText, conversation.getUserId());
+                // UP-16 多轮指代：倒扫上一条用户问句。必须用 rawMessages()（裸文本快照）——
+                // messages() 返回的是拼了 [时间戳] 前缀的装配副本，拿来比对会全部对不上。
+                // "那周日呢"这类指代短句靠上轮问句在检索侧被改写补全（只改检索词，不改喂给模型的原句）。
+                String prevQuestion = com.xiaozhi.ai.rag.RagQueryRewrite
+                        .previousUserQuestion(conversation.rawMessages(), userText);
+                String injection = retrievalService.buildInjection(userText, conversation.getUserId(), prevQuestion);
                 if (injection != null && !injection.isBlank()) {
                     messages.add(1, new SystemMessage(injection));
                 }

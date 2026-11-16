@@ -48,7 +48,7 @@ class RetrievalServiceInjectionTest {
         when(rag.vectorStore()).thenReturn(store);
         ArgumentCaptor<SearchRequest> captor = ArgumentCaptor.forClass(SearchRequest.class);
         when(store.similaritySearch(captor.capture())).thenReturn(hits);
-        return new RetrievalService(rag, new RagProperties());
+        return new RetrievalService(rag, new RagProperties(), null);
     }
 
     @Test
