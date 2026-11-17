@@ -5,10 +5,12 @@ import com.xiaozhi.ai.stt.SttResult;
 import com.xiaozhi.ai.stt.SttService;
 import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.communication.common.SessionManager;
+import com.xiaozhi.communication.protocol.AwaitHelper;
 import com.xiaozhi.communication.server.websocket.WebSocketSession;
 import com.xiaozhi.dialogue.audio.VadService;
 import com.xiaozhi.dialogue.playback.Player;
 import com.xiaozhi.dialogue.runtime.Persona;
+import com.xiaozhi.dialogue.runtime.UserSpeechAudio;
 import com.xiaozhi.enums.ListenMode;
 import com.xiaozhi.storage.service.StorageServiceFactory;
 import com.xiaozhi.utils.AudioUtils;
@@ -36,7 +38,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.timeout;
@@ -53,7 +57,11 @@ import static org.mockito.Mockito.when;
 class DialogueServiceSegmentRotationTest {
 
     private static final String SESSION_ID = "rotate-session";
-    private static final Duration AWAIT_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * 等待窗口统一 10s：全量带测试构建的 CPU 饱和/JIT 停顿可把 3s 级窗口拉穿（2026-11-17 T-01 修复实测）。
+     * 正常路径等待都在毫秒内返回，只有异常路径才用满预算
+     */
+    private static final Duration AWAIT_TIMEOUT = Duration.ofSeconds(10);
     /** 帧首字节标记这帧属于哪段：识别假体据此决定返回哪份终稿，两段线程起跑先后不影响 */
     private static final byte FIRST_SEGMENT = 1;
     private static final byte SECOND_SEGMENT = 2;
@@ -89,6 +97,8 @@ class DialogueServiceSegmentRotationTest {
     private final AtomicInteger sttCalls = new AtomicInteger();
     /** 每次 stream 收到的音频 */
     private final List<List<byte[]>> receivedAudio = new CopyOnWriteArrayList<>();
+    /** sendStt 的实际下发序列：换流段线程与收句段线程的先后不可靠（T-01 竞态），门闩与断言以此为准 */
+    private final List<String> sentStt = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -103,10 +113,22 @@ class DialogueServiceSegmentRotationTest {
         lenient().when(persona.getSttService()).thenReturn(sttService);
         lenient().when(persona.getPlayer()).thenReturn(player);
         lenient().when(vadService.getPcmData(SESSION_ID)).thenReturn(List.of(frame()));
+        // 记录 sendStt 下发序列，供换流/收句之间的门闩轮询
+        lenient().doAnswer(inv -> {
+            sentStt.add(inv.getArgument(0));
+            return null;
+        }).when(player).sendStt(anyString());
     }
 
     @AfterEach
     void tearDown() {
+        // 用户音频落盘在 SerialTaskRegistry 的会话串行队列上异步跑，文件句柄要等任务收尾才释放；
+        // 不等它，@TempDir 清理会与写文件撞锁（T-01），Windows 上让整轮测试报 Failed to close extension context。
+        // 等法与 ProtocolTestHarness.shutdown() 同一套：等最后一轮 complete() 即等到队列全部完成。
+        UserSpeechAudio userAudio = session != null ? session.getUserSpeechAudio() : null;
+        if (userAudio != null) {
+            userAudio.awaitStoredPath(AWAIT_TIMEOUT);
+        }
         AudioUtils.AUDIO_PATH = originalAudioPath;
     }
 
@@ -116,7 +138,10 @@ class DialogueServiceSegmentRotationTest {
                 FIRST_SEGMENT, SttResult.textOnly("我先说前半段，"),
                 SECOND_SEGMENT, SttResult.textOnly("再说后半段。")));
 
-        runRotatedTurn(List.of(frame(REPLAY), frame(REPLAY)));
+        // 收句帧之前等第一段的 soFar 确实下发过：两段线程的 sendStt 先后不保证（跨线程），
+        // 不加门闩，inOrder 会以 "换流提示先于整句" 这个生产代码不保证的顺序做断言（T-01 竞态）
+        runRotatedTurn(List.of(frame(REPLAY), frame(REPLAY)), () ->
+                AwaitHelper.until("换流提示已下发", AWAIT_TIMEOUT, () -> sentStt.contains("我先说前半段，")));
 
         ArgumentCaptor<UserMessage> userMessage = ArgumentCaptor.forClass(UserMessage.class);
         verify(persona, timeout(AWAIT_TIMEOUT.toMillis()).times(1)).chat(userMessage.capture(), eq(true), anyLong());
@@ -137,7 +162,9 @@ class DialogueServiceSegmentRotationTest {
                 REPLAY, SttResult.textOnly("前半段"),
                 SECOND_SEGMENT, SttResult.textOnly("后半段")));
 
-        runRotatedTurn(firstSegmentPcm);
+        // 同上：等第一段（重放终稿"前半段"）的 soFar 下发后再收句，顺序从概率问题变确定
+        runRotatedTurn(firstSegmentPcm, () ->
+                AwaitHelper.until("第一段重放终稿已下发", AWAIT_TIMEOUT, () -> sentStt.contains("前半段")));
 
         verify(player, timeout(AWAIT_TIMEOUT.toMillis())).sendStt("前半段后半段");
         // 第一段失败 → 重放第一段 → 第二段，共三次识别，重放收到的正是换流时交出的那段
@@ -161,10 +188,11 @@ class DialogueServiceSegmentRotationTest {
     }
 
     /**
-     * 驱动一次说话：SPEECH_START 起流 → SPEECH_ROTATE 换流并交出第一段 PCM → SPEECH_END 收句。
-     * 第一段的识别流在换流时终结，其线程先于收句返回。本轮在后台线程收尾，断言用 Mockito 的等待窗口接住。
+     * 驱动一次说话：SPEECH_START 起流 → SPEECH_ROTATE 换流并交出第一段 PCM → settleAfterRotate → SPEECH_END 收句。
+     * settleAfterRotate 在换流与收句之间放门闩：等第一段线程把 rotated 终稿并入并发完 soFar 提示，
+     * merge 不再依赖 15s 等待窗口，两段线程的 sendStt 先后也从此确定。收尾在后台线程，断言用等待窗口接住。
      */
-    private void runRotatedTurn(List<byte[]> firstSegmentPcm) {
+    private void runRotatedTurn(List<byte[]> firstSegmentPcm, Runnable settleAfterRotate) {
         when(vadService.processAudio(eq(SESSION_ID), any(), anyLong()))
                 .thenReturn(new VadService.VadResult(VadService.VadStatus.SPEECH_START, frame(FIRST_SEGMENT)),
                         new VadService.VadResult(VadService.VadStatus.SPEECH_ROTATE, frame(SECOND_SEGMENT),
@@ -173,6 +201,7 @@ class DialogueServiceSegmentRotationTest {
 
         dialogueService.processAudioData(session, frame());
         dialogueService.processAudioData(session, frame());
+        settleAfterRotate.run();
         dialogueService.processAudioData(session, frame());
     }
 

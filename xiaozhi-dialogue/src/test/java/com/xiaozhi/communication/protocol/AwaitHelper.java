@@ -6,7 +6,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
- * 协议套件的异步等待工具。
+ * 协议套件与 dialogue 服务测试的异步等待工具。
  *
  * <p>协议链路上有 6 处 {@code Thread.startVirtualThread}（设备状态写库、MCP 初始化、STT 启动、
  * 唤醒词音频落盘等）以及 ScheduledPlayer 的发送线程，断言必须等条件成立而不是等固定时长。
@@ -15,7 +15,7 @@ import java.util.function.Supplier;
  * <p>反向断言（"某件事从未发生"）不能直接 verify never：要先用 {@link #until} 等一个
  * 可观测的后置信号让链路 settle，再验；否则是假绿。必要时用 {@link #stayFalse} 明确表达。
  */
-final class AwaitHelper {
+public final class AwaitHelper {
 
     /** 默认等待上限，够覆盖虚拟线程调度与 reactor boundedElastic 切换 */
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(3);
@@ -25,12 +25,12 @@ final class AwaitHelper {
     private AwaitHelper() {
     }
 
-    static void until(String description, BooleanSupplier condition) {
+    public static void until(String description, BooleanSupplier condition) {
         until(description, DEFAULT_TIMEOUT, condition);
     }
 
     /** 轮询直到条件成立，超时抛 AssertionError 并带上条件描述 */
-    static void until(String description, Duration timeout, BooleanSupplier condition) {
+    public static void until(String description, Duration timeout, BooleanSupplier condition) {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {

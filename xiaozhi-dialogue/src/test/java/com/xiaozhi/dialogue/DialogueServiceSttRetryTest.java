@@ -5,10 +5,12 @@ import com.xiaozhi.ai.stt.SttResult;
 import com.xiaozhi.ai.stt.SttService;
 import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.communication.common.SessionManager;
+import com.xiaozhi.communication.protocol.AwaitHelper;
 import com.xiaozhi.communication.server.websocket.WebSocketSession;
 import com.xiaozhi.dialogue.audio.VadService;
 import com.xiaozhi.dialogue.playback.Player;
 import com.xiaozhi.dialogue.runtime.Persona;
+import com.xiaozhi.dialogue.runtime.UserSpeechAudio;
 import com.xiaozhi.enums.DeviceState;
 import com.xiaozhi.enums.ListenMode;
 import com.xiaozhi.storage.service.StorageServiceFactory;
@@ -27,7 +29,9 @@ import reactor.core.publisher.Flux;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -52,7 +56,12 @@ import static org.mockito.Mockito.when;
 class DialogueServiceSttRetryTest {
 
     private static final String SESSION_ID = "retry-session";
-    private static final Duration AWAIT_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * 等待窗口统一 10s：全量带测试构建的 CPU 饱和/JIT 停顿可把 3s 级窗口拉穿
+     * （2026-11-17 实测：spy 记录到 transitionTo(IDLE) 与状态位真正写入之间被拉开 3s 以上，3s 轮询超时误报）。
+     * 正常路径等待都在毫秒内返回，只有异常路径才用满预算
+     */
+    private static final Duration AWAIT_TIMEOUT = Duration.ofSeconds(10);
 
     @Mock
     private VadService vadService;
@@ -84,6 +93,12 @@ class DialogueServiceSttRetryTest {
     private final AtomicInteger sttCalls = new AtomicInteger();
     /** 第二次识别拿到的音频，用来核对重放的是不是整句 */
     private final AtomicReference<List<byte[]>> replayedFrames = new AtomicReference<>();
+    /**
+     * 收句帧驱动完成的门闩。completeSpeechSegment 先发流完成信号、后写 THINKING（读与写之间有缝），
+     * 段线程在信号瞬间醒来就能跑完整条丢弃链把状态写成 IDLE，再被测试线程的 THINKING 盖回去（T-01 竞态）。
+     * 识别结果必须等收句帧全部处理完再出，丢弃链的 IDLE 才一定是最后一次状态写入。
+     */
+    private final CountDownLatch turnDriven = new CountDownLatch(1);
 
     @BeforeEach
     void setUp() {
@@ -102,6 +117,13 @@ class DialogueServiceSttRetryTest {
 
     @AfterEach
     void tearDown() {
+        // 用户音频落盘在 SerialTaskRegistry 的会话串行队列上异步跑，文件句柄要等任务收尾才释放；
+        // 不等它，@TempDir 清理会与写文件撞锁（T-01），Windows 上让整轮测试报 Failed to close extension context。
+        // 等法与 ProtocolTestHarness.shutdown() 同一套：等最后一轮 complete() 即等到队列全部完成。
+        UserSpeechAudio userAudio = session != null ? session.getUserSpeechAudio() : null;
+        if (userAudio != null) {
+            userAudio.awaitStoredPath(AWAIT_TIMEOUT);
+        }
         AudioUtils.AUDIO_PATH = originalAudioPath;
     }
 
@@ -126,7 +148,8 @@ class DialogueServiceSttRetryTest {
 
         verify(session, timeout(AWAIT_TIMEOUT.toMillis())).transitionTo(DeviceState.IDLE);
         assertThat(sttCalls.get()).isEqualTo(1);
-        assertThat(session.getDeviceState()).isEqualTo(DeviceState.IDLE);
+        // verify 只等 transitionTo 被调用，状态位的写入还在其后；读之前轮询等它落位，高负载下不再读到旧值
+        AwaitHelper.until("无缓冲可重放被丢弃后状态应回到 IDLE", AWAIT_TIMEOUT, () -> session.getDeviceState() == DeviceState.IDLE);
         verify(persona, never()).prepareTurn();
     }
 
@@ -138,7 +161,7 @@ class DialogueServiceSttRetryTest {
 
         verify(session, timeout(AWAIT_TIMEOUT.toMillis())).transitionTo(DeviceState.IDLE);
         assertThat(sttCalls.get()).isEqualTo(1);
-        assertThat(session.getDeviceState()).isEqualTo(DeviceState.IDLE);
+        AwaitHelper.until("识别超时不重试被丢弃后状态应回到 IDLE", AWAIT_TIMEOUT, () -> session.getDeviceState() == DeviceState.IDLE);
         verify(persona, never()).prepareTurn();
     }
 
@@ -161,7 +184,7 @@ class DialogueServiceSttRetryTest {
 
         verify(session, timeout(AWAIT_TIMEOUT.toMillis())).transitionTo(DeviceState.IDLE);
         assertThat(sttCalls.get()).isEqualTo(2);
-        assertThat(session.getDeviceState()).isEqualTo(DeviceState.IDLE);
+        AwaitHelper.until("两试皆败无文本被丢弃后状态应回到 IDLE", AWAIT_TIMEOUT, () -> session.getDeviceState() == DeviceState.IDLE);
         verify(persona, never()).prepareTurn();
         verify(player, never()).sendStt(anyString());
     }
@@ -175,6 +198,8 @@ class DialogueServiceSttRetryTest {
             Flux<byte[]> audio = invocation.getArgument(0);
             if (sttCalls.incrementAndGet() == 1) {
                 audio.blockLast(AWAIT_TIMEOUT);
+                // 收句帧（含 THINKING 写入）没处理完之前不出结果，见 turnDriven 的注释
+                turnDriven.await(AWAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
                 return first;
             }
             replayedFrames.set(audio.collectList().block(AWAIT_TIMEOUT));
@@ -186,6 +211,7 @@ class DialogueServiceSttRetryTest {
 
         dialogueService.processAudioData(session, frame());
         dialogueService.processAudioData(session, frame());
+        turnDriven.countDown();
     }
 
     private static VadService.VadResult vadResult(VadService.VadStatus status) {
