@@ -729,7 +729,7 @@ Promise.all([
               <template v-else-if="column.dataIndex === 'operation'">
                 <TableActionButtons
                   :record="record"
-                  permission-prefix="system:role"
+                  permission-prefix="system:role:api"
                   show-edit
                   show-set-default
                   show-delete
@@ -741,7 +741,7 @@ Promise.all([
                 >
                   <template #actions>
                     <a-button
-                      v-permission="'system:role:memory'"
+                      v-permission="['system:role:memory:chat:api:list', 'system:role:memory:summary:api:list']"
                       type="link"
                       size="small"
                       class="table-action-link"
@@ -760,7 +760,7 @@ Promise.all([
         <a-tab-pane
           key="2"
           :tab="editingRoleId ? t('role.updateRole') : t('role.createRole')"
-          v-if="userStore.hasPermission(editingRoleId ? 'system:role:update' : 'system:role:create')"
+          v-if="userStore.hasPermission(editingRoleId ? 'system:role:api:update' : 'system:role:api:create')"
         >
           <a-form
             ref="formRef"
@@ -835,7 +835,7 @@ Promise.all([
               </a-col>
 
               <a-col :span="24">
-                <a-form-item v-permission="'system:role:update'" :label="t('role.setAsDefaultRole')">
+                <a-form-item v-permission="'system:role:api:update'" :label="t('role.setAsDefaultRole')">
                   <a-switch v-model:checked="formData.isDefault" />
                   <span style="margin-left: 8px; color: var(--ant-color-text-tertiary)">
                     {{ t('role.defaultRoleTip') }}
@@ -1222,7 +1222,7 @@ Promise.all([
               </a-collapse-panel>
             </a-collapse>
 
-            <div v-permission="'system:role:mcp-tools'">
+            <div v-permission="'system:role:mcp-tools:api:list'">
               <!-- MCP 工具设置 -->
               <a-divider orientation="left">{{ t('role.mcpTools') }}</a-divider>
               <a-row :gutter="20">
@@ -1322,7 +1322,7 @@ Promise.all([
             <!-- 表单操作按钮 -->
             <a-form-item>
               <a-button
-                v-permission="editingRoleId ? 'system:role:update' : 'system:role:create'"
+                v-permission="editingRoleId ? 'system:role:api:update' : 'system:role:api:create'"
                 type="primary"
                 html-type="submit"
                 :loading="submitLoading"

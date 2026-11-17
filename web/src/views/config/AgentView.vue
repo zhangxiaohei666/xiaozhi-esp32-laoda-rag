@@ -402,7 +402,7 @@ fetchData()
     <a-card :title="t('router.title.agent')" :bordered="false">
       <template #extra>
         <a-button
-          v-permission="['system:config:agent:create', 'system:config:agent:update']"
+          v-permission="['system:config:api:create', 'system:config:api:update']"
           type="primary"
           :loading="platformConfigLoading"
           @click="handleConfigPlatform"
@@ -465,7 +465,7 @@ fetchData()
           <template v-else-if="column.key === 'operation'">
             <TableActionButtons
               :record="record"
-              permission-prefix="system:config:agent"
+              permission-prefix="system:config:api"
               show-set-default
               :is-default="record.isDefault == 1"
               @set-default="() => handleSetDefault(record)"

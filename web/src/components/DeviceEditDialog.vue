@@ -87,12 +87,12 @@ watch(
         :cancel-text="t('common.cancel')"
         @confirm="handleClearMemory"
       >
-        <a-button v-permission="'system:device:memory'" key="clear" type="primary" danger :loading="clearMemoryLoading">
+        <a-button v-permission="'system:device:memory:api:delete'" key="clear" type="primary" danger :loading="clearMemoryLoading">
           {{ t('device.clearMemory') }}
         </a-button>
       </a-popconfirm>
       <a-button key="back" @click="handleClose">{{ t('common.cancel') }}</a-button>
-      <a-button v-permission="'system:device:update'" key="submit" type="primary" @click="handleOk">{{ t('common.confirm') }}</a-button>
+      <a-button v-permission="'system:device:api:update'" key="submit" type="primary" @click="handleOk">{{ t('common.confirm') }}</a-button>
     </template>
   </a-modal>
 </template>

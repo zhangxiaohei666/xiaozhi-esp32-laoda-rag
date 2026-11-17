@@ -8,6 +8,7 @@ import { useExport, type ExportColumn } from '@/composables/useExport'
 import { useRequest } from '@/composables/useRequest'
 import { useMemoryOwnerFilter } from '@/composables/useMemoryOwnerFilter'
 import { useLoadingStore } from '@/store/loading'
+import { useUserStore } from '@/store/user'
 import { deleteMessage } from '@/services/message'
 import { shouldIgnoreRequestError } from '@/services/request'
 import { querySummaryMemory, queryChatMemory, deleteSummaryMemory } from '@/services/memory'
@@ -22,10 +23,14 @@ import { useEventBus } from '@vueuse/core'
 const { t } = useI18n()
 const route = useRoute()
 const loadingStore = useLoadingStore()
+const userStore = useUserStore()
 
 /** 对话记录页的两个 Tab：逐条的聊天记录与压缩出来的对话摘要，共用同一组设备与角色筛选 */
 type RecordTab = 'chat' | 'summary'
-const memoryType = ref<RecordTab>(route.query.tab === 'summary' ? 'summary' : 'chat')
+// 摘要 Tab 的数据源是 /api/memory/summary，后端要求 system:role:memory:summary:api:list；
+// 无此权限（如普通用户）只显示逐条聊天 Tab，直链 ?tab=summary 也回退到 chat，避免一进来就 403。
+const canViewSummary = computed(() => userStore.hasPermission('system:role:memory:summary:api:list'))
+const memoryType = ref<RecordTab>(route.query.tab === 'summary' && canViewSummary.value ? 'summary' : 'chat')
 
 // 获取路由参数
 const roleId = computed(() => parseInt(route.query.roleId as string) || 0)
@@ -482,7 +487,12 @@ onMounted(async () => {
     <a-card :bordered="false" :body-style="{ padding: '0 24px 24px 24px' }">
       <a-tabs v-model:active-key="memoryType" destroy-inactive-tab-pane @change="handleTabChange">
         <template #rightExtra>
-          <a-button v-permission="'system:role:memory:export'" type="primary" :loading="exporting" @click="handleExport">
+          <a-button
+            v-permission="['system:role:memory:chat:api:list', 'system:role:memory:summary:api:list']"
+            type="primary"
+            :loading="exporting"
+            @click="handleExport"
+          >
             {{ t('common.export') }}
           </a-button>
         </template>
@@ -569,7 +579,7 @@ onMounted(async () => {
               <template v-else-if="column.dataIndex === 'operation'">
                 <TableActionButtons
                   :record="record"
-                  :permissions="{ delete: 'system:role:memory:chat:delete' }"
+                  :permissions="{ delete: 'system:role:memory:chat:api:delete' }"
                   :show-delete="record.state !== '0'"
                   :delete-title="t('message.confirmDeleteMessage')"
                   @delete="() => handleDeleteMessage(record)"
@@ -580,7 +590,7 @@ onMounted(async () => {
         </a-tab-pane>
 
         <!-- 对话摘要 -->
-        <a-tab-pane key="summary" :tab="t('memory.summariesTab')">
+        <a-tab-pane v-if="canViewSummary" key="summary" :tab="t('memory.summariesTab')">
           <a-table
             class="ellipsis-table"
             row-key="createTime"
@@ -617,7 +627,7 @@ onMounted(async () => {
               <template v-else-if="column.dataIndex === 'operation'">
                 <TableActionButtons
                   :record="record"
-                  :permissions="{ delete: 'system:role:memory:summary:delete' }"
+                  :permissions="{ delete: 'system:role:memory:summary:api:delete' }"
                   show-delete
                   :delete-title="t('common.confirmDelete')"
                   @delete="() => handleDeleteMemory(record as SummaryMemory)"

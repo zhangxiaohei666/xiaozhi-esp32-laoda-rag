@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { message } from 'ant-design-vue'
+import { useUserStore } from '@/store/user'
 
 const memoryApiMock = vi.hoisted(() => ({
   querySummaryMemory: vi.fn(),
@@ -48,6 +49,13 @@ describe('MemoryManagementView 请求迁移', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    // 摘要 Tab 现在按 system:role:memory:summary:api:list 门显隐（与后端 /api/memory/summary 鉴权一致），
+    // 本组用例验证的是"有权看摘要"场景，夹具里显式授这两个键；无权限的回退行为由路由与权限指令测试覆盖。
+    const userStore = useUserStore()
+    userStore.setPermissions([
+      { permissionId: 1, name: '逐条聊天', permissionKey: 'system:role:memory:chat:api:list', permissionType: 'api' },
+      { permissionId: 2, name: '对话摘要', permissionKey: 'system:role:memory:summary:api:list', permissionType: 'api' },
+    ])
     roleApiMock.queryRoles.mockResolvedValue({
       code: 200,
       data: { list: [{ roleId: 3, roleName: '默认角色' }], total: 1 },

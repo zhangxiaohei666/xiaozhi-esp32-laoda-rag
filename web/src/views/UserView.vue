@@ -274,7 +274,8 @@ fetchData()
     <!-- 数据表格 -->
     <a-card :title="t('router.title.user')" :bordered="false">
       <template #extra>
-        <a-button v-permission="'system:user:export'" type="primary" @click="handleExport" :loading="exporting">
+        <!-- 导出是前端拼 CSV：数据源就是下面的列表接口，因此按列表权限显隐 -->
+        <a-button v-permission="'system:user:api:list'" type="primary" @click="handleExport" :loading="exporting">
           {{ t('common.export') }}
         </a-button>
       </template>

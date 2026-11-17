@@ -95,6 +95,10 @@ const routes: RouteRecordRaw[] = [
         },
       },
       // 对话记录：逐条聊天记录与对话摘要两个 Tab
+      // permissions 数组任一命中即可见（hasAnyPermission）：逐条走 chat:api:list，摘要走 summary:api:list，
+      // 与后端 MessageController / MemoryController 的实际鉴权键一一对应。
+      // 此前误挂 menu 键 system:role，普通用户（角色 2 有 memory:chat:api:list 却无 system:role）
+      // 永远看不到本页，后端发的权限形同虚设。
       {
         path: 'memory/chat',
         name: 'memory-chat',
@@ -103,7 +107,7 @@ const routes: RouteRecordRaw[] = [
           title: 'router.title.conversationRecords',
           parent: 'router.parent.memoryManagement',
           requiresAuth: true,
-          permission: 'system:role',
+          permissions: ['system:role:memory:chat:api:list', 'system:role:memory:summary:api:list'],
         },
       },
       // 配置管理

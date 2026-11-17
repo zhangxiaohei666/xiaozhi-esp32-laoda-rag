@@ -34,7 +34,7 @@
     <!-- 表格区域 -->
     <a-card :title="t('template.templateList')" :bordered="false" style="margin-top: 16px">
       <template #extra>
-        <a-button v-permission="'system:prompt-template:create'" type="primary" @click="handleCreate">
+        <a-button v-permission="'system:prompt-template:api:create'" type="primary" @click="handleCreate">
           <template #icon><PlusOutlined /></template>
           {{ t('template.createTemplate') }}
         </a-button>
@@ -69,7 +69,7 @@
           <template v-else-if="column.key === 'operation'">
             <TableActionButtons
               :record="record"
-              permission-prefix="system:prompt-template"
+              permission-prefix="system:prompt-template:api"
               show-edit
               show-view
               show-set-default
@@ -101,7 +101,7 @@
       <template #footer>
         <a-button @click="modal.close">{{ t('common.cancel') }}</a-button>
         <a-button
-          v-permission="modal.isEdit.value ? 'system:prompt-template:update' : 'system:prompt-template:create'"
+          v-permission="modal.isEdit.value ? 'system:prompt-template:api:update' : 'system:prompt-template:api:create'"
           type="primary"
           :loading="modal.submitLoading.value"
           @click="handleSubmit"
@@ -161,7 +161,7 @@
           />
         </a-form-item>
 
-        <a-form-item v-permission="'system:prompt-template:update'" :label="t('common.isDefault')" name="isDefault">
+        <a-form-item v-permission="'system:prompt-template:api:update'" :label="t('common.isDefault')" name="isDefault">
           <a-switch v-model:checked="formData.isDefault" />
           <span style="margin-left: 8px; color: var(--ant-color-text-tertiary)">{{ t('template.defaultTip') }}</span>
         </a-form-item>

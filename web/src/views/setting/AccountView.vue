@@ -268,7 +268,7 @@ const updateUserAvatar = async (avatarPath: string) => {
 
             <a-form-item>
               <a-button
-                v-permission="'system:setting:account:update'"
+                v-permission="'system:setting:account:api:update'"
                 type="primary"
                 html-type="submit"
                 :loading="submitLoading"
@@ -282,8 +282,10 @@ const updateUserAvatar = async (avatarPath: string) => {
         <!-- 右侧：头像预览 -->
         <a-col :xs="24" :lg="12">
           <div class="avatar-section">
+            <!-- 头像上传走 POST /api/file/upload，后端要求 system:file:api:upload——
+                 用它做显隐门才是诚实的：无此权限（如普通用户）隐藏上传入口，避免点击后 403 -->
             <a-upload
-              v-if="userStore.hasPermission('system:setting:account:update')"
+              v-if="userStore.hasPermission('system:file:api:upload')"
               name="file"
               :show-upload-list="false"
               :before-upload="beforeAvatarUpload"
@@ -306,7 +308,7 @@ const updateUserAvatar = async (avatarPath: string) => {
               </a-avatar>
             </div>
             <div class="avatar-tips">
-              <p>{{ userStore.hasPermission('system:setting:account:update') ? t('common.clickToChangeAvatar') : t('common.avatar') }}</p>
+              <p>{{ userStore.hasPermission('system:file:api:upload') ? t('common.clickToChangeAvatar') : t('common.avatar') }}</p>
               <p style="color: var(--ant-color-text-tertiary); font-size: 12px">{{ t('common.avatarFormatTip') }}</p>
             </div>
           </div>

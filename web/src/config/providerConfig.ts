@@ -25,7 +25,7 @@ const s3CompatibleFields = (endpointPlaceholder: string, endpointHelpKey: string
 export const configTypeMap: Record<string, ConfigTypeInfo> = {
   llm: {
     label: 'config.llm',
-    permissionPrefix: 'system:config',
+    permissionPrefix: 'system:config:api',
     // 各类别对应的参数字段定义
     typeFields: {
       // OpenAI 系列
@@ -946,7 +946,7 @@ export const configTypeMap: Record<string, ConfigTypeInfo> = {
   },
   stt: {
     label: 'config.stt',
-    permissionPrefix: 'system:config',
+    permissionPrefix: 'system:config:api',
     typeOptions: [
       { label: 'Tencent Cloud', value: 'tencent', key: '0' },
       {
@@ -1090,7 +1090,7 @@ export const configTypeMap: Record<string, ConfigTypeInfo> = {
   },
   tts: {
     label: 'config.tts',
-    permissionPrefix: 'system:config',
+    permissionPrefix: 'system:config:api',
     typeOptions: [
       { label: 'Tencent Cloud', value: 'tencent', key: '0' },
       { label: 'Aliyun (DashScope)', value: 'aliyun', key: '1' },
@@ -1238,7 +1238,7 @@ export const configTypeMap: Record<string, ConfigTypeInfo> = {
   },
   oss: {
     label: 'config.oss',
-    permissionPrefix: 'system:config',
+    permissionPrefix: 'system:config:api',
     typeOptions: [
       { label: 'Local', value: 'local', key: '0' },
       { label: 'Tencent Cloud (COS)', value: 'tencent', key: '1' },

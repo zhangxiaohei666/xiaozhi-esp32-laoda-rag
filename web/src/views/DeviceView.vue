@@ -390,7 +390,7 @@ fetchData()
       <template #extra>
         <a-input-search
           v-model:value="addDeviceCode"
-          v-permission="'system:device:create'"
+          v-permission="'system:device:api:create'"
           :loading="addingDevice"
           :enter-button="t('device.addDevice')"
           :placeholder="t('device.enterDeviceCode')"
@@ -529,7 +529,7 @@ fetchData()
             <TableActionButtons
               v-else
               :record="record"
-              permission-prefix="system:device"
+              permission-prefix="system:device:api"
               show-edit
               show-view
               show-delete
@@ -540,7 +540,7 @@ fetchData()
             >
               <template #actions>
                 <a-button
-                  v-permission="'system:device:memory'"
+                  v-permission="['system:role:memory:chat:api:list', 'system:role:memory:summary:api:list']"
                   type="link"
                   size="small"
                   class="table-action-link"
