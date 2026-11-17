@@ -85,7 +85,10 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <argLine>-Djava.library.path=${project.parent.basedir}/lib</argLine>
+                    <!-- 整参加引参：路径含空格（D:\xiaozhi - 副本）时，surefire 在 Windows 下经 cmd.exe 起 fork，
+                         不加引号会把 -Djava.library.path 的值在空格处拆断，forked VM 收到残参直接 exit 1，
+                         0 个测试跑、整模块报 The forked VM terminated（2026-11-17 实测）。无空格路径语义不变 -->
+                    <argLine>"-Djava.library.path=${project.parent.basedir}/lib"</argLine>
                 </configuration>
             </plugin>
         </plugins>
