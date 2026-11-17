@@ -194,7 +194,19 @@ export function useWebSocket() {
 
   // 手动重连（会话结束后状态栏上的"点击重连"）
   const reconnect = async (config: WebSocketConfig): Promise<boolean> => {
-    return reconnectToServer(config)
+    try {
+      // 与 connect() 保持同构：经重连建立的连接同样要接 TTS 音频帧。
+      // 之前只调 reconnectToServer，initAudio 与二进制处理器注册被整体跳过，
+      // 表现为"点击重连"后建连成功、文字正常，但每帧音频都因
+      // "未注册二进制消息处理函数"被丢弃（2026-11-17 浮窗实测复现）。
+      // initAudio 幂等（上下文与 Opus 库已就绪时直接复用），重复调用无副作用。
+      await initAudio()
+      registerBinaryHandler(handleBinaryAudioMessage)
+      return await reconnectToServer(config)
+    } catch (error) {
+      console.error('重连失败:', error)
+      return false
+    }
   }
 
   // 清空消息（连带停掉仍在缓冲/播放的音频）
