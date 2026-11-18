@@ -139,8 +139,16 @@ public class AliyunTtsService implements TtsService {
             if (model.startsWith("qwen") && model.contains("tts")) {
                 return new String[]{model, voice};
             }
-            // 如果模型名称无效，将整个字符串视为音色名
-            log.warn("无效的千问模型名称: {}, 使用默认模型 qwen3-tts-flash-realtime", model);
+            // 2026-11-18：这里原先是 log.warn("无效的千问模型名称...使用默认模型 qwen3-tts-flash-realtime")。
+            // 那句话极具误导性 —— 对 cosyvoice 音色也会照打，让人以为真的回退到了 qwen，
+            // 而实际上调用方随后走的是 ttsCosyvoice，根本没用到这个返回值。
+            // 现在只在【确实不是 cosyvoice】时才告警，且措辞说明"本条仅影响千问通道"。
+            if (isCosyVoiceName(voiceParam)) {
+                // cosyvoice 音色不该被千问解析器处理，调用方已按模型族分流，这里静默兜底即可
+                log.debug("音色 {} 属 CosyVoice 族，跳过千问解析", model);
+            } else {
+                log.warn("未识别为千问 TTS 模型: {}, 本通道将回退默认 qwen3-tts-flash-realtime（仅影响千问通道）", model);
+            }
             return new String[]{"qwen3-tts-flash-realtime", voiceParam};
         }
 
@@ -210,7 +218,17 @@ public class AliyunTtsService implements TtsService {
             if (getVoiceName().contains("sambert")) {
                 return ttsSambert(text);
             } else {
-                // 解析千问音色参数
+                // 2026-11-18 修：原来这里用 parseQwenVoiceParam 的结果去判断走哪条分支，
+                // 而该解析器对 cosyvoice-* 一律判为"无效千问模型"并打 WARN、退回默认 qwen 音色，
+                // 于是 cosyvoice 音色的分支判断全靠 parsed[1] 恰好查不到 VOICE_MAP 来兜底，
+                // 同时刷出一条极具误导性的「无效的千问模型名称」告警（实际走的是 cosyvoice，没走 qwen）。
+                //
+                // 现在改为先按音色名本身判定模型族，再交给对应解析器：
+                //   - 以 cosyvoice 开头 → 直接走 CosyVoice 通道，不经过 qwen 解析器，不产生误导日志
+                //   - 否则沿用原逻辑（qwen 音色在 VOICE_MAP 里能查到 → qwen；查不到 → cosyvoice 兜底）
+                if (isCosyVoiceName(getVoiceName())) {
+                    return ttsCosyvoice(text);
+                }
                 String[] parsed = parseQwenVoiceParam(getVoiceName());
                 String actualVoiceName = parsed[1];
 
@@ -224,6 +242,16 @@ public class AliyunTtsService implements TtsService {
             log.error("语音合成aliyun -使用{}模型语音合成失败：", getVoiceName(), e);
             throw new Exception("语音合成失败");
         }
+    }
+
+    /**
+     * 判断音色名是否属于 CosyVoice 模型族。
+     *
+     * <p>覆盖两类写法：① 冒号分隔 `cosyvoice-v3-flash:xxx`；② 音色克隆前缀 `cosyvoice-v2-xxx`。
+     * 两种情况都应以 cosyvoice 开头，故直接看前缀即可 —— 不需要解析出具体模型名。
+     */
+    private static boolean isCosyVoiceName(String voiceName) {
+        return voiceName != null && voiceName.trim().toLowerCase().startsWith("cosyvoice");
     }
 
     private Path ttsQwen(String text) {

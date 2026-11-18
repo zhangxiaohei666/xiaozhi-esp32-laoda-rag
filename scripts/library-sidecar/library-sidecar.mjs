@@ -133,12 +133,21 @@ async function persistCookies() {
 async function ensureBrowser({ headed = false } = {}) {
   if (context) return;
   log(`启动浏览器（${headed ? '有头' : '无头'}）profile=${path.relative(PROJECT_ROOT, PROFILE_DIR)}`);
-  context = await chromium.launchPersistentContext(PROFILE_DIR, {
+  // 2026-11-18：支持复用系统已安装的 Chrome，免去下载 150MB Chromium。
+  //   PLAYWRIGHT_CHANNEL=chrome  → 用系统 Chrome（需本机装了 Chrome）
+  //   留空                       → 沿用默认行为（用 ms-playwright 缓存里的 Chromium）
+  const launchOpts = {
     headless: !headed,
     viewport: { width: 1440, height: 900 },
     locale: 'zh-CN',
     args: ['--disable-blink-features=AutomationControlled'],
-  });
+  };
+  const channel = process.env.PLAYWRIGHT_CHANNEL;
+  if (channel) {
+    launchOpts.channel = channel;
+    log(`使用系统浏览器 channel=${channel}`);
+  }
+  context = await chromium.launchPersistentContext(PROFILE_DIR, launchOpts);
   page = context.pages()[0] || (await context.newPage());
   await restoreCookies();
 }
