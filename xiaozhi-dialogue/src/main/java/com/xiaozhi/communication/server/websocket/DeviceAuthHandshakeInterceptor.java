@@ -1,7 +1,9 @@
 package com.xiaozhi.communication.server.websocket;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.xiaozhi.communication.WebChatDevice;
 import com.xiaozhi.communication.auth.DeviceAuthService;
+import com.xiaozhi.security.CurrentUser;
 import com.xiaozhi.utils.CommonUtils;
 import jakarta.annotation.Resource;
 import org.springframework.http.HttpStatus;
@@ -42,12 +44,18 @@ public class DeviceAuthHandshakeInterceptor implements HandshakeInterceptor {
         Map<String, String> params = parseQuery(request.getURI().getRawQuery());
         String deviceId = firstNonBlank(request.getHeaders().getFirst("device-id"),
                 params.get("device-id"));
-        if (!deviceAuthService.isEnabled()) {
-            return accept(attributes, deviceId);
-        }
         String token = stripBearer(request.getHeaders().getFirst("Authorization"));
         if (!StringUtils.hasText(token)) {
             token = stripBearer(firstNonBlank(params.get("token"), params.get("Authorization")));
+        }
+
+        // 网页聊天身份认的是管理端登录态，与设备鉴权开不开无关；
+        // 设备鉴权密钥留空时若一并放行，任何人不带凭据就能以别人的网页聊天身份接入
+        if (WebChatDevice.isWebChat(deviceId)) {
+            return verifyLogin(response, attributes, deviceId, token);
+        }
+        if (!deviceAuthService.isEnabled()) {
+            return accept(attributes, deviceId);
         }
 
         if (!StringUtils.hasText(deviceId)) {
@@ -65,11 +73,21 @@ public class DeviceAuthHandshakeInterceptor implements HandshakeInterceptor {
             }
             return reject(response, "设备token无效或已过期", deviceId);
         }
+        return verifyLogin(response, attributes, deviceId, token);
+    }
+
+    /** 非 MAC 的会话身份必须与登录用户逐字一致 */
+    private boolean verifyLogin(ServerHttpResponse response, Map<String, Object> attributes,
+                                String deviceId, String token) {
+        if (!StringUtils.hasText(token)) {
+            return reject(response, "缺少token", deviceId);
+        }
         try {
             Object loginId = StpUtil.getLoginIdByToken(token);
             if (loginId != null) {
-                // 非 MAC 的会话身份必须与登录用户逐字一致；大小写变形会被库排序规则当成同一行
-                if (!deviceId.equals("user_chat_" + loginId)) {
+                // 逐字比较，大小写变形的身份也拒绝
+                String expected = WebChatDevice.deviceIdOf(CurrentUser.parse(loginId));
+                if (!deviceId.equals(expected)) {
                     return reject(response, "登录用户与会话身份不一致", deviceId);
                 }
                 return accept(attributes, deviceId);

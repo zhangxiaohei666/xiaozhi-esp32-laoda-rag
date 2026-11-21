@@ -12,7 +12,7 @@ import com.xiaozhi.dialogue.runtime.Persona;
 import com.xiaozhi.dialogue.runtime.PersonaListener;
 import com.xiaozhi.enums.DeviceState;
 import com.xiaozhi.enums.ListenMode;
-import com.xiaozhi.event.TtsPlaybackCompletedEvent;
+import com.xiaozhi.dialogue.event.TtsPlaybackCompletedEvent;
 import com.xiaozhi.utils.AudioUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -408,11 +408,16 @@ class MultiTurnDialogueProtocolTest {
      */
     private static final class GatedSynthesizer extends Synthesizer {
 
+        @Override
+        protected Flux<Speech> roleSentence(String text) {
+            return Flux.empty();
+        }
+
         private volatile Disposable disposable;
         private volatile CountDownLatch gate;
 
         private GatedSynthesizer(ChatSession chatSession, Player player) {
-            super(chatSession, null, player);
+            super(chatSession, null, player, null);
         }
 
         @Override

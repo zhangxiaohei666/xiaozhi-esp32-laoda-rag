@@ -8,12 +8,10 @@ import com.xiaozhi.common.exception.OperationFailedException;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.exception.UserPasswordNotMatchException;
-import com.xiaozhi.common.exception.UsernameNotFoundException;
 import com.xiaozhi.common.web.ApiResponse;
 import com.xiaozhi.common.web.ResultStatus;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -32,7 +30,6 @@ import org.springframework.web.context.request.async.AsyncRequestTimeoutExceptio
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
-import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import lombok.extern.slf4j.Slf4j;
 /**
@@ -42,25 +39,11 @@ import lombok.extern.slf4j.Slf4j;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    /**
-     * 与 {@code application-common.yml} 的 {@code spring.servlet.multipart.max-file-size} 同源，
-     * 只用于把真实上限写进报错文案 —— 写死一个 20MB/50MB 容易和配置漂移。
-     */
-    @Value("${spring.servlet.multipart.max-file-size:50MB}")
-    private String maxMultipartFileSize = "50MB";
-
-    @ExceptionHandler(UsernameNotFoundException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Void> handleUsernameNotFoundException(UsernameNotFoundException e, WebRequest request) {
-        log.warn("用户名不存在异常: {}", e.getMessage(), e);
-        return ApiResponse.badRequest("用户名不存在");
-    }
-
     @ExceptionHandler(UserPasswordNotMatchException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleUserPasswordNotMatchException(UserPasswordNotMatchException e, WebRequest request) {
         log.warn("用户密码不匹配异常: {}", e.getMessage(), e);
-        return ApiResponse.badRequest("用户密码不正确");
+        return ApiResponse.badRequest(defaultMessage(e.getMessage(), "账号或密码错误"));
     }
 
     @ExceptionHandler(UnauthorizedException.class)
@@ -175,7 +158,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleIllegalArgumentException(IllegalArgumentException e, WebRequest request) {
-        // 本仓把这个异常当业务异常用，message 是有意写给用户看的（"不支持的文件扩展名: .html"、"该邮箱未注册" 等），
+        // 本仓把这个异常当业务异常用，message 是有意写给用户看的（"不支持的文件扩展名: .html"、"验证码错误或已过期" 等），
         // 必须透传。改成一律回显兜底文案会让至少 7 个端点丢掉可操作的提示；
         // 真要杜绝框架内部 message 外泄，得先把这些抛出点换成专门的业务异常类，那是另一件事。
         log.warn("参数错误: {}", e.getMessage(), e);
@@ -188,17 +171,6 @@ public class GlobalExceptionHandler {
         // 同上，"MCP服务代码重复"、"该手机号、邮箱或用户名已被注册"、"不能禁用当前登录账号" 都靠这条透传
         log.warn("业务状态冲突: {}", e.getMessage(), e);
         return ApiResponse.conflict(defaultMessage(e.getMessage(), "当前状态不允许此操作"));
-    }
-
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
-    public ApiResponse<Void> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException e, WebRequest request) {
-        // 容器层（spring.servlet.multipart.max-file-size）在业务校验之前就拒了。
-        // 不单独接住的话会落到 RuntimeException 那条，前端看到 500「业务异常」，
-        // 用户完全不知道该把文件改小 —— 最容易被当成「服务坏了」的一类报错。
-        log.warn("上传超过容器上限: {}", e.getMessage());
-        return ApiResponse.error(HttpStatus.PAYLOAD_TOO_LARGE.value(),
-                "上传文件超过服务器上限（" + maxMultipartFileSize + "），请压缩或拆分后再传");
     }
 
     @ExceptionHandler(ConfirmRequiredException.class)
@@ -221,7 +193,7 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Void> handleRuntimeException(RuntimeException e, WebRequest request) {
         log.error("业务异常: {}", e.getMessage(), e);
-        return ApiResponse.serverError("服务器错误，请联系管理员");
+        return unexpected();
     }
 
     @ExceptionHandler(DuplicateKeyException.class)
@@ -235,7 +207,12 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Void> handleException(Exception e, WebRequest request) {
         log.error("系统异常: {}", e.getMessage(), e);
-        return ApiResponse.serverError("服务器错误，请联系管理员");
+        return unexpected();
+    }
+
+    /** 内部细节不外泄；带独立业务码，前端据此换成调用方自己的失败提示 */
+    private static ApiResponse<Void> unexpected() {
+        return ApiResponse.error(ResultStatus.UNEXPECTED_ERROR, "服务器错误，请联系管理员");
     }
 
     private String extractBindingMessage(BindingResult bindingResult, String fallback) {

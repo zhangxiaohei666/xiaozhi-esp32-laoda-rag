@@ -1,10 +1,14 @@
 package com.xiaozhi.communication.common;
 
+import com.xiaozhi.common.model.bo.ConfigChangeBO;
+import com.xiaozhi.common.model.bo.MemoryScopeBO;
+import com.xiaozhi.common.model.bo.SessionCloseBO;
 import com.xiaozhi.event.AiConfigChangedEvent;
 import com.xiaozhi.event.ConversationHistoryClearedEvent;
 import com.xiaozhi.event.DeviceRoleChangedEvent;
 import com.xiaozhi.event.DeviceSessionClosedEvent;
 import com.xiaozhi.event.DeviceUpdatedEvent;
+import com.xiaozhi.event.MemoryDeletedEvent;
 import com.xiaozhi.event.RoleUpdatedEvent;
 import com.xiaozhi.utils.JsonUtil;
 import jakarta.annotation.Resource;
@@ -12,9 +16,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
-
-import java.util.HashMap;
-import java.util.Map;
 
 import lombok.extern.slf4j.Slf4j;
 /**
@@ -24,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
  *   <li>clearConversation：清除指定设备的对话历史</li>
  *   <li>roleChanged：设备角色变更，重新加载 Persona</li>
  *   <li>configChanged：配置变更，清除对应工厂缓存</li>
+ *   <li>memoryDeleted：摘要删了，丢掉在线会话手里的记忆快照</li>
  * </ul>
  */
 @Slf4j
@@ -36,6 +38,7 @@ public class RedisBroadcast {
     public static final String CHANNEL_CLOSE_SESSION = "xiaozhi:close-session";
     public static final String CHANNEL_ROLE_UPDATED = "xiaozhi:role-updated";
     public static final String CHANNEL_DEVICE_UPDATED = "xiaozhi:device-updated";
+    public static final String CHANNEL_MEMORY_DELETED = "xiaozhi:memory-deleted";
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -76,6 +79,11 @@ public class RedisBroadcast {
         }
     }
 
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onMemoryDeleted(MemoryDeletedEvent event) {
+        memoryDeleted(event.getOwnerId(), event.getRoleId());
+    }
+
     public void clearConversation(String deviceId) {
         publish(CHANNEL_CLEAR_CONVERSATION, deviceId);
     }
@@ -93,10 +101,7 @@ public class RedisBroadcast {
      * 接收方命中该 sessionId 时跳过，避免新连接建立过程中收到自己发出的广播而误关自己
      */
     public void closeDeviceSession(String deviceId, String excludeSessionId) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("deviceId", deviceId);
-        payload.put("excludeSessionId", excludeSessionId);
-        publish(CHANNEL_CLOSE_SESSION, JsonUtil.toJson(payload));
+        publish(CHANNEL_CLOSE_SESSION, JsonUtil.toJson(new SessionCloseBO(deviceId, excludeSessionId)));
     }
 
     public void roleUpdated(Integer roleId) {
@@ -107,9 +112,12 @@ public class RedisBroadcast {
         publish(CHANNEL_DEVICE_UPDATED, deviceId);
     }
 
+    public void memoryDeleted(String ownerId, Integer roleId) {
+        publish(CHANNEL_MEMORY_DELETED, JsonUtil.toJson(new MemoryScopeBO(ownerId, roleId)));
+    }
+
     public void configChanged(String configType, Integer configId) {
-        String payload = JsonUtil.toJson(Map.of("configType", configType, "configId", configId));
-        publish(CHANNEL_CONFIG_CHANGED, payload);
+        publish(CHANNEL_CONFIG_CHANGED, JsonUtil.toJson(new ConfigChangeBO(configType, configId)));
     }
 
     private void publish(String channel, String message) {

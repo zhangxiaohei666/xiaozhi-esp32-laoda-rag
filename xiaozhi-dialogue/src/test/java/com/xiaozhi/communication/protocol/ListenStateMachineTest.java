@@ -375,7 +375,12 @@ class ListenStateMachineTest {
      * 交给真实 Player，走完 tts start / sentence_start / 二进制帧 / tts stop 的真实下发流程。
      */
     private Synthesizer scriptedSynthesizer(ChatSession session, Player player) {
-        return new Synthesizer(session, (TtsService) null, player) {
+        return new Synthesizer(session, (TtsService) null, player, null) {
+
+            @Override
+            protected Flux<Speech> roleSentence(String text) {
+                return Flux.empty();
+            }
             private final AtomicBoolean active = new AtomicBoolean();
 
             @Override

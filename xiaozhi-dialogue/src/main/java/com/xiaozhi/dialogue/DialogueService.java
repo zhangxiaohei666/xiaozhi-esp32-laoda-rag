@@ -17,14 +17,16 @@ import com.xiaozhi.common.model.bo.MessageMetadataBO;
 import org.springframework.ai.chat.messages.UserMessage;
 import com.xiaozhi.dialogue.audio.VadService.VadStatus;
 import com.xiaozhi.dialogue.audio.AecService;
+import com.xiaozhi.dialogue.runtime.FaultNotifier;
 import com.xiaozhi.dialogue.playback.Player;
 import com.xiaozhi.dialogue.runtime.GoodbyeMessageSupplier;
 import com.xiaozhi.dialogue.runtime.Persona;
 import com.xiaozhi.dialogue.runtime.SpeechTurn;
 import com.xiaozhi.dialogue.runtime.UserSpeechAudio;
 import com.xiaozhi.enums.DeviceState;
-import com.xiaozhi.event.ChatAbortedEvent;
-import com.xiaozhi.event.SpeechRecognizedEvent;
+import com.xiaozhi.dialogue.event.AbortReason;
+import com.xiaozhi.dialogue.event.ChatAbortedEvent;
+import com.xiaozhi.dialogue.event.SpeechRecognizedEvent;
 import com.xiaozhi.common.SerialTaskRegistry;
 
 import com.xiaozhi.storage.service.StorageServiceFactory;
@@ -32,7 +34,6 @@ import com.xiaozhi.utils.AudioUtils;
 import com.xiaozhi.utils.DateUtils;
 import com.xiaozhi.utils.OpusProcessor;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.util.ObjectUtils;
@@ -62,13 +63,15 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class DialogueService{
-    private static final String ABORT_REASON_ASR = "检测到用户说话";
     /** 用户开口后播放最多暂停这么久，识别终稿迟迟不来就自动续播 */
     private static final long BARGE_IN_PAUSE_MAX_MS = 5000;
     /** 唤醒词音频的文件名标记，与 user/assistant 区分开 */
     private static final String WAKE_WORD_AUDIO_TAG = "wakeword";
     /** 最后一段收句后等前面各段终稿的上限，前面的段早在换流时就已收流，正常几百毫秒内到齐 */
     private static final Duration SEGMENT_MERGE_WAIT = Duration.ofSeconds(15);
+
+    @Resource
+    private FaultNotifier faultNotifier;
 
     @Resource
     private PersonaFactory personaFactory;
@@ -99,13 +102,6 @@ public class DialogueService{
 
     @Resource
     private StorageServiceFactory storageServiceFactory;
-
-    @EventListener
-    public void onApplicationEvent(ChatAbortedEvent event) {
-        ChatSession chatSession = sessionManager.getSession(event.getSessionId());
-        if (chatSession == null) return;
-        abortDialogue(chatSession, event.getReason());
-    }
 
     /**
      * 处理音频数据
@@ -263,7 +259,7 @@ public class DialogueService{
         }
         log.info("确认打断 - SessionId: {}, text: {}", session.getSessionId(), text);
         persona.markInterrupted();
-        abortDialogue(session, ABORT_REASON_ASR);
+        abortDialogue(session, AbortReason.BARGE_IN);
         return true;
     }
 
@@ -353,8 +349,13 @@ public class DialogueService{
                 }
 
                 Persona persona = session.getPersona();
-                if (persona == null || persona.getSttService() == null) {
-                    releaseDiscardedTurn(session, turnSink);
+                if (persona == null) {
+                    // 会话没建起来（比如没有可用的对话模型），说什么都不会有回应
+                    discardWithNotice(session, turnSink, faultNotifier::onSessionUnavailable);
+                    return;
+                }
+                if (persona.getSttService() == null) {
+                    discardWithNotice(session, turnSink, faultNotifier::onSttUnavailable);
                     return;
                 }
 
@@ -371,11 +372,12 @@ public class DialogueService{
 
                 // 中间段：终稿只拼接不回答，先把到目前为止的文本发给设备，用户知道服务端听到了
                 if (segment.isRotated()) {
-                    segment.complete(sttResult);
-                    String soFar = turn.textSoFar();
-                    if (StringUtils.hasText(soFar) && persona.getPlayer() != null) {
-                        persona.getPlayer().sendStt(soFar);
-                    }
+                    Player progressPlayer = persona.getPlayer();
+                    turn.completeRotated(segment, sttResult, soFar -> {
+                        if (progressPlayer != null) {
+                            progressPlayer.sendStt(soFar);
+                        }
+                    });
                     return;
                 }
 
@@ -397,9 +399,15 @@ public class DialogueService{
                     return;
                 }
                 if (!StringUtils.hasText(text)) {
-                    releaseDiscardedTurn(session, turnSink);
+                    // 识别失败与用户没说话是两回事：失败了要给句话，没说话就安静地丢掉
+                    if (sttResult != null && sttResult.operationFailed()) {
+                        discardWithNotice(session, turnSink, faultNotifier::onSttFailed);
+                    } else {
+                        releaseDiscardedTurn(session, turnSink);
+                    }
                     return;
                 }
+                faultNotifier.onSttSucceeded(session);
                 // 播放刚结束时拾回的尾音也会被识别成一句话
                 if (isEcho(session, text)) {
                     log.info("识别到的是设备自己的回声，忽略 - SessionId: {}, text: {}", sessionId, text);
@@ -408,7 +416,7 @@ public class DialogueService{
                 }
 
                 // 发送STT识别结果到设备
-                persona.getPlayer().sendStt(sttResult.text());
+                turn.announceFinal(sttResult.text(), persona.getPlayer()::sendStt);
 
                 // 从这里到 chat 接管之间本轮也算活跃，紧接着的第二句才能打断本句
                 long epoch = persona.prepareTurn();
@@ -433,9 +441,12 @@ public class DialogueService{
                 log.error("流式识别错误: {}", e.getMessage(), e);
                 Player player = session.getPlayer();
                 if (player != null && player.isPaused()) {
+                    // 插话时出错，恢复原来的播放就是最好的交代，不再插一句道歉
                     player.resume();
+                    releaseDiscardedTurn(session, turnSink);
+                } else {
+                    discardWithNotice(session, turnSink, faultNotifier::onDialogueFailed);
                 }
-                releaseDiscardedTurn(session, turnSink);
             } finally {
                 // 中间段异常退出也要给个空终稿，最后一段拼接时才不用等到超时
                 segment.complete(SttResult.textOnly(""));
@@ -479,6 +490,17 @@ public class DialogueService{
     }
 
     /**
+     * 丢弃本轮并上报故障。本轮已被新一轮取代（包括长句的中间段）时只丢弃：那是旧轮的事，报上去会把道歉插进新一轮
+     */
+    private void discardWithNotice(ChatSession session, Sinks.Many<byte[]> turnSink, Consumer<ChatSession> report) {
+        boolean current = turnSink != null && session.getAudioSinks() == turnSink;
+        releaseDiscardedTurn(session, turnSink);
+        if (current) {
+            report.accept(session);
+        }
+    }
+
+    /**
      * 本轮识别没有产出对话（空结果、回声、误打断、识别异常）时放开会话状态。
      * 本轮识别流已经终结，不复位会一直停在 THINKING，不活跃检查跳过该会话，
      * 超时告别与自动关闭对这条连接永久失效。
@@ -515,6 +537,11 @@ public class DialogueService{
             personaFactory.buildPersona(session).chat(text, false);
         } catch (Exception e) {
             log.error("处理唤醒词失败: {}", e.getMessage(), e);
+            // 用户叫了设备却一声不吭，只会以为设备坏了。这次不说的话，退出上面预占的 SPEAKING，
+            // 否则没有播放来收尾，不活跃检查会永远跳过这个会话
+            if (!faultNotifier.onSessionUnavailable(session) && session.getDeviceState() == DeviceState.SPEAKING) {
+                session.transitionTo(DeviceState.IDLE);
+            }
         }
     }
 
@@ -607,70 +634,43 @@ public class DialogueService{
     }
 
     /**
-     * 中止当前对话
-     * 先取消Synthesizer的上游Flux订阅，再停止Player。
-     * 如果不先取消Synthesizer，SentenceHelper会继续分句并调用player.play(newFlux)，
-     * 导致音频重叠或播放被清空后又有新音频进来。
+     * 中止当前对话，所有要打断对话的一方都直调这里。断合成、收尾历史、停播的先后由 {@link Persona#interrupt()} 负责，
+     * 通知设备停播与告别回调由 {@link Player#abort()} 负责，这里按原因做会话层的收尾，做完发一个事实事件
      */
-    public void abortDialogue(ChatSession session, String reason) {
+    public void abortDialogue(ChatSession session, AbortReason reason) {
+        String sessionId = session.getSessionId();
         try {
-            String sessionId = session.getSessionId();
-            log.info("中止对话 - SessionId: {}, Reason: {}", sessionId, reason);
+            log.info("中止对话 - SessionId: {}, 原因: {}", sessionId, reason);
 
-            // ASR 触发的打断不关流：startStt 刚建的新流上正跑着 STT
-            if (!ABORT_REASON_ASR.equals(reason)) {
+            // 插话打断不关流：startStt 刚建的新流上正跑着 STT
+            if (reason != AbortReason.BARGE_IN) {
                 session.closeAudioStream();
-                // abort 后服务端发 tts stop，设备切回聆听，服务端同步为 LISTENING
+                // abort 后设备收到 tts stop 切回聆听，服务端同步为 LISTENING
                 session.transitionTo(DeviceState.LISTENING);
             }
 
-            // 先取消语音合成器的上游Flux订阅，停止产生新的音频数据
             Persona persona = session.getPersona();
-            if (persona != null && persona.getSynthesizer() != null) {
-                persona.getSynthesizer().cancel();
-            }
-
-            // 历史截到用户听到的位置。要在 player.stop() 之前，此时播放器还记着下发到了哪句
             if (persona != null) {
-                try {
-                    // ASR 触发的打断已在识别回调里同步递增过代次
-                    if (!ABORT_REASON_ASR.equals(reason)) {
-                        persona.markInterrupted();
-                    }
-                    persona.onInterrupted();
-                } catch (Exception e) {
-                    log.error("打断后收尾对话历史失败: {}", e.getMessage(), e);
+                // 插话打断已在识别回调里同步递增过代次
+                if (reason != AbortReason.BARGE_IN) {
+                    persona.markInterrupted();
                 }
-            }
-
-            // 再终止音频播放，清空播放队列
-            Player player = session.getPlayer();
-            if(player!=null){
-                player.stop();
+                persona.interrupt();
             }
 
             // 已发送未播放的帧被设备丢弃、不会产生回声，清掉待喂入的 AEC 参考，
             // 否则下一轮开头会被当参考喂入，污染对齐导致回声漏出
             if (aecService != null) {
-                aecService.clearReference(session.getSessionId());
+                aecService.clearReference(sessionId);
             }
 
-            // 无论player是否存在，都需要发送stop消息通知设备进入聆听状态
-            // 这是因为设备可能在还未创建player时就发送了abort消息
-            messageService.sendTtsMessage(session, null, "stop");
-
-            // 如果在goodbye流程中被打断（functionAfterChat已设置），
-            // 需要执行清理回调（关闭session等），并清除回调防止重复执行
-            if (player != null) {
-                Runnable afterChat = player.getFunctionAfterChat();
-                if (afterChat != null) {
-                    player.setFunctionAfterChat(null);
-                    afterChat.run();
-                }
-            }
+            // 设备可能在还没有播放器时就发来 abort，照样要告诉它停播
+            personaFactory.playerOf(session).abort();
         } catch (Exception e) {
             log.error("中止对话失败: {}", e.getMessage(), e);
         }
+        String deviceId = session.getDevice() != null ? session.getDevice().getDeviceId() : null;
+        eventPublisher.publishEvent(new ChatAbortedEvent(this, sessionId, deviceId, reason));
     }
 
     /**

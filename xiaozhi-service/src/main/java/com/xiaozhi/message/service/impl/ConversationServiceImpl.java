@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
+import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.model.bo.ConversationBO;
 import com.xiaozhi.message.convert.MessageConvert;
@@ -22,6 +23,7 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 
 @Service
 public class ConversationServiceImpl implements ConversationService {
@@ -58,6 +60,17 @@ public class ConversationServiceImpl implements ConversationService {
     }
 
     @Override
+    public void checkAccess(String sessionId, Integer userId) {
+        ConversationBO conversation = get(sessionId);
+        if (conversation == null) {
+            throw new ResourceNotFoundException("会话不存在或已删除: " + sessionId);
+        }
+        if (!Objects.equals(conversation.getUserId(), userId)) {
+            throw new UnauthorizedException("会话不属于当前用户: " + sessionId);
+        }
+    }
+
+    @Override
     public void create(String sessionId, Integer userId, Integer roleId, String firstMessage) {
         LocalDateTime now = DateUtils.now();
         ConversationDO conversation = new ConversationDO();
@@ -83,6 +96,7 @@ public class ConversationServiceImpl implements ConversationService {
 
     @Override
     public void rename(Integer userId, String sessionId, String title) {
+        checkAccess(sessionId, userId);
         int updated = conversationMapper.update(null, new LambdaUpdateWrapper<ConversationDO>()
             .eq(ConversationDO::getSessionId, sessionId)
             .eq(ConversationDO::getUserId, userId)
@@ -105,13 +119,31 @@ public class ConversationServiceImpl implements ConversationService {
             .stream()
             .map(ConversationDO::getSessionId)
             .toList();
-        if (owned.isEmpty()) {
+        return deleteAll(owned);
+    }
+
+    @Override
+    @Transactional
+    public List<String> deleteByRole(Integer roleId) {
+        if (roleId == null) {
             return List.of();
         }
-        conversationMapper.delete(new LambdaQueryWrapper<ConversationDO>().in(ConversationDO::getSessionId, owned));
-        messageService.deleteBySessionIds(owned);
-        summaryService.deleteBySessionIds(owned);
-        return owned;
+        return deleteAll(conversationMapper.selectList(new LambdaQueryWrapper<ConversationDO>()
+                .select(ConversationDO::getSessionId)
+                .eq(ConversationDO::getRoleId, roleId))
+            .stream()
+            .map(ConversationDO::getSessionId)
+            .toList());
+    }
+
+    private List<String> deleteAll(List<String> sessionIds) {
+        if (sessionIds.isEmpty()) {
+            return List.of();
+        }
+        conversationMapper.delete(new LambdaQueryWrapper<ConversationDO>().in(ConversationDO::getSessionId, sessionIds));
+        messageService.deleteBySessionIds(sessionIds);
+        summaryService.deleteBySessionIds(sessionIds);
+        return sessionIds;
     }
 
     /** 第一句话去掉换行和多余空白后取开头 */

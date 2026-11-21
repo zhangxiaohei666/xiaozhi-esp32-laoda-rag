@@ -6,6 +6,7 @@ import com.xiaozhi.ai.llm.service.AddresseeClassifier;
 import com.xiaozhi.ai.llm.service.IntentService;
 import com.xiaozhi.ai.tool.ToolsGlobalRegistry;
 import com.xiaozhi.ai.tts.TtsServiceFactory;
+import com.xiaozhi.dialogue.runtime.FaultNotifier;
 import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.communication.common.ChatSession;
@@ -99,6 +100,7 @@ class ProtocolTestHarness {
     private final SessionManager sessionManager = new SessionManager();
     private final MessageHandler messageHandler = new MessageHandler();
     private final DialogueService dialogueService = new DialogueService();
+    private final FaultNotifier faultNotifier = new FaultNotifier();
     private final WebSocketHandler webSocketHandler = new WebSocketHandler();
     private final IntentService intentService = new IntentService();
 
@@ -178,7 +180,11 @@ class ProtocolTestHarness {
                 "addresseeClassifier", addresseeClassifier,
                 "goodbyeMessages", goodbyeMessages,
                 "eventPublisher", eventBus.publisher(),
-                "storageServiceFactory", storageServiceFactory);
+                "storageServiceFactory", storageServiceFactory,
+                "faultNotifier", faultNotifier);
+
+        inject(faultNotifier,
+                "ttsFactory", ttsServiceFactory);
 
         inject(messageHandler,
                 "deviceService", deviceService,
@@ -192,7 +198,6 @@ class ProtocolTestHarness {
                 "chatModelFactory", chatModelFactory,
                 "toolsGlobalRegistry", toolsGlobalRegistry,
                 "roleService", roleService,
-                "applicationContext", eventBus.applicationContext(),
                 "messageService", messageSender,
                 "aecService", aecService,
                 "deviceRegistry", deviceRegistry,
@@ -209,6 +214,7 @@ class ProtocolTestHarness {
         requireAllInjected(dialogueService);
         requireAllInjected(messageHandler);
         requireAllInjected(webSocketHandler);
+        requireAllInjected(faultNotifier);
 
         eventBus.register(sessionManager);
         eventBus.register(dialogueService);
@@ -226,6 +232,14 @@ class ProtocolTestHarness {
                 .thenAnswer(invocation -> buildPersona(invocation.getArgument(0)));
         lenient().when(personaFactory.buildPersona(any(ChatSession.class), any(), any()))
                 .thenAnswer(invocation -> buildPersona(invocation.getArgument(0)));
+        // 照工厂的语义：会话还没有播放器就建一个（开播前就到的打断要用）
+        lenient().when(personaFactory.playerOf(any(ChatSession.class))).thenAnswer(invocation -> {
+            ChatSession session = invocation.getArgument(0);
+            if (session.getPlayer() == null) {
+                session.setPlayer(new ScheduledPlayer(session, messageSender));
+            }
+            return session.getPlayer();
+        });
         // 按本地存储的语义读取：相对路径直接当本地文件读，读不到返回 null
         lenient().when(storageServiceFactory.downloadFrom(anyString())).thenAnswer(invocation -> {
             Path path = Path.of(invocation.<String>getArgument(0));

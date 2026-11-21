@@ -30,14 +30,17 @@ import org.springframework.ai.chat.model.MessageAggregator;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import com.xiaozhi.ai.tool.ToolCallActivityRegistry;
+import com.xiaozhi.ai.tool.session.ToolSession;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -70,17 +73,6 @@ import lombok.extern.slf4j.Slf4j;
 @Builder(toBuilder = true)
 public class Persona {
 
-    /**
-     * ToolContext 中传递 sessionId 而非整个 ChatSession，避免序列化问题。
-     * XiaoZhiToolCallingManager 负责通过 SessionManager 还原为 ChatSession 再传给 Function。
-     */
-    public static final String TOOL_CONTEXT_SESSION_ID_KEY = "sessionId";
-
-    private static final List<String> ERROR_FALLBACK_MESSAGES = List.of(
-            "抱歉，我刚刚走神了，你能再说一遍吗？",
-            "哎呀，我这会儿没反应过来，再说一次好吗？",
-            "不好意思，刚才没听清，麻烦你再讲一遍。");
-    private static final Random FALLBACK_RANDOM = new Random();
 
     private final SessionManager sessionManager;
     
@@ -123,6 +115,20 @@ public class Persona {
     @NonNull
     private Conversation conversation;
 
+
+    /** 模型迟迟不出第一个字就放弃，走兜底话术 */
+    @Builder.Default
+    private Duration firstTokenTimeout = Duration.ofSeconds(30);
+
+    /** 两次输出之间的最长静默；等工具结果的那段不算，见 {@link #modelSilence} */
+    @Builder.Default
+    private Duration idleTimeout = Duration.ofSeconds(90);
+
+    /** 工具执行进度，首字与静默超时据此把等工具的时间让出去；为 null 时不让 */
+    private ToolCallActivityRegistry toolCallActivity;
+
+    /** 模型失败时向它要一句提示，为空时不补 */
+    private FaultNotifier faultNotifier;
 
     /** 当前轮次运行态，打断收尾与播完判定都从这里取 */
     @Builder.Default
@@ -194,9 +200,9 @@ public class Persona {
 
             ChatOptions chatOptions = ToolCallingChatOptions.builder()
                     .toolCallbacks(effectiveTools)
-                    .toolContext(TOOL_CONTEXT_SESSION_ID_KEY, sessionId)
-                    .toolContext("deviceId", conversation.getOwnerId())
-                    .toolContext("conversationTimestamp", turn.turnId)
+                    .toolContext(ToolSession.CONTEXT_SESSION_ID, sessionId)
+                    .toolContext(ToolSession.CONTEXT_OWNER_ID, conversation.getOwnerId())
+                    .toolContext(ToolSession.CONTEXT_TURN_ID, turn.turnId)
                     .build();
 
             // 准备期间被打断：用户消息已由打断收尾记入历史，这里不再生成
@@ -233,7 +239,12 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
             }
             Prompt prompt = new Prompt(messages, chatOptions);
 
+            // 连接层的读超时管不到「响应头已到、正文半途停吐」，只能在流上对两次输出之间计时；
+            // 超时照常走下面的失败收尾与兜底话术，否则上游卡住时设备永远停在「思考中」
+            String activityKey = ToolCallActivityRegistry.key(conversation.getOwnerId(), turn.turnId);
             Flux<ChatResponse> chatFlux = chatModel.stream(prompt)
+                .timeout(modelSilence(activityKey, firstTokenTimeout),
+                        response -> modelSilence(activityKey, idleTimeout))
                 .doOnError(error -> {
                     listener.onError(error);
                     failTurn(turn);
@@ -256,6 +267,23 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
             failTurn(turn);
             return Flux.error(e);
         }
+    }
+
+    /**
+     * 模型沉默满 limit 时发出。等工具结果的那段不算沉默：工具还在执行就整段顺延，
+     * 刚执行完就从结束那一刻重新起算；工具自己有执行上限，顺延是有界的
+     */
+    private Mono<Long> modelSilence(String activityKey, Duration limit) {
+        return modelSilence(activityKey, limit, limit);
+    }
+
+    private Mono<Long> modelSilence(String activityKey, Duration limit, Duration wait) {
+        return Mono.delay(wait).flatMap(tick -> {
+            Duration left = toolCallActivity == null
+                    ? Duration.ZERO
+                    : toolCallActivity.remainingQuiet(activityKey, limit);
+            return left.isZero() ? Mono.just(tick) : modelSilence(activityKey, limit, left);
+        });
     }
 
     /**
@@ -399,6 +427,34 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
 
     private boolean synthesizerActive() {
         return synthesizer != null && synthesizer.isActive();
+    }
+
+    /**
+     * 打断正在说的话：先断合成上游，再按用户听到的位置收尾历史，最后停播。
+     * 顺序不能换：先停播放器，合成还会继续往清空的队列里送帧；收尾要赶在停播之前，此时播放器还记着下发到了哪句。
+     * 收尾或停播失败只记日志，调用方后面的收尾（通知设备停播等）照常做
+     */
+    public void interrupt() {
+        if (synthesizer != null) {
+            synthesizer.cancel();
+        }
+        try {
+            onInterrupted();
+        } catch (Exception e) {
+            log.error("打断后收尾对话历史失败 - SessionId: {}", sessionId, e);
+        }
+        try {
+            player.stop();
+        } catch (Exception e) {
+            log.warn("停止播放器失败 - SessionId: {}: {}", sessionId, e.getMessage());
+        }
+    }
+
+    /** 非回复口播（如功能出错的一句话）：走单句入口，不接管本轮回复 */
+    public void say(String text) {
+        if (synthesizer != null && StringUtils.hasText(text)) {
+            synthesizer.synthesize(text);
+        }
     }
 
     /**
@@ -551,10 +607,10 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
     }
 
     /**
-     * LLM 一个字都没返回就失败时补一句口播，避免设备完全静默让用户干等。
+     * LLM 一个字都没返回就失败时补一句口播，避免设备完全静默让用户干等。这句不是回复，走 {@link #say}。
      * 已经开口再失败则直接收尾——中途插一句道歉比沉默更突兀。
      */
-    static Flux<String> withErrorFallback(Flux<String> speechFlux) {
+    Flux<String> withErrorFallback(Flux<String> speechFlux) {
         AtomicBoolean answered = new AtomicBoolean(false);
         return speechFlux
                 .doOnNext(text -> {
@@ -562,11 +618,13 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
                         answered.set(true);
                     }
                 })
-                .onErrorResume(error -> answered.get() ? Flux.empty() : Flux.just(errorFallbackMessage()));
-    }
-
-    static String errorFallbackMessage() {
-        return ERROR_FALLBACK_MESSAGES.get(FALLBACK_RANDOM.nextInt(ERROR_FALLBACK_MESSAGES.size()));
+                .onErrorResume(error -> {
+                    ChatSession session = getSession();
+                    if (!answered.get() && faultNotifier != null && session != null) {
+                        faultNotifier.replyFailed(session).ifPresent(this::say);
+                    }
+                    return Flux.empty();
+                });
     }
 
     /**
@@ -599,10 +657,6 @@ List<Message> messages = new ArrayList<>(conversation.messages(ctx));
         ChatSession session = getSession();
         if (session == null || !session.isAudioChannelOpen()){
             return ;
-        }
-        // 告别语不需要保存opus音频文件，重置时间戳防止复用上一轮对话的值
-        if (player.getOpusRecorder() != null) {
-            player.getOpusRecorder().setAssistantMessageCreatedAt(null);
         }
         player.setFunctionAfterChat(() -> {
             session.setPersona(null);

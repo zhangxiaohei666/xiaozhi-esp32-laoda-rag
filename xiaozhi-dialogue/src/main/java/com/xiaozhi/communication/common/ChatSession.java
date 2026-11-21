@@ -1,5 +1,6 @@
 package com.xiaozhi.communication.common;
 
+import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.communication.domain.AudioParams;
 import com.xiaozhi.communication.domain.iot.IotDescriptor;
 import com.xiaozhi.communication.server.websocket.BinaryProtocolCodec;
@@ -48,8 +49,8 @@ public abstract class ChatSession {
     protected DeviceBO device;
 
     /**
-     * 对话上下文，承载与对话逻辑直接相关的状态（Persona、Player、工具回调等）。
-     * 内部实现细节，外部通过本类的直通方法访问。
+     * 对话上下文，承载与对话逻辑直接相关的状态（Persona、Player、工具回调、故障提示等）。
+     * 新的对话状态加在它上面，调用方经 {@link #getDialogueContext()} 访问，本类不再补直通方法。
      */
     private DialogueContext dialogueContext;
 
@@ -122,12 +123,12 @@ public abstract class ChatSession {
     protected volatile Instant lastActivityTime;
 
     /** 当前角色的会话空闲超时；0 表示不自动结束。 */
-    private volatile int inactiveTimeoutSeconds = 60;
+    private volatile int inactiveTimeoutSeconds = RoleBO.DEFAULT_INACTIVE_TIMEOUT_SECONDS;
 
     /** 防止高频扫描重复触发告别语和关闭流程。 */
     private final AtomicBoolean inactivityClosing = new AtomicBoolean(false);
 
-    // ========== 对话层直通方法（内部委托给 dialogueContext，外部无需感知） ==========
+    // ========== 对话层直通方法：存量白名单，不再增加 ==========
 
     public Persona getPersona()                 { return dialogueContext.getPersona(); }
     public void setPersona(Persona persona)     { dialogueContext.setPersona(persona); }

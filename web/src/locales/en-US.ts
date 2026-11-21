@@ -232,6 +232,7 @@ export default {
     enterEmailFirst: 'Please enter email address first!',
     enterValidEmail: 'Please enter a valid email format!',
     verificationCodeSent: 'Verification code has been sent!',
+    verificationCodeSentIfExists: 'If the account exists, a verification code has been sent',
     // Mobile phone login related
     mobilePhone: 'Mobile Phone',
     enterMobilePhone: 'Please enter phone number',
@@ -557,6 +558,8 @@ export default {
       llmPerfXCloudApiUrl: 'PerfXCloud API endpoint',
       llmReplicateApiKey: 'Apply at https://replicate.com/account/api-tokens',
       llmReplicateApiUrl: 'Replicate API endpoint',
+      llmRuncrateApiKey: 'Apply at https://www.runcrate.ai/dashboard/api-keys',
+      llmRuncrateApiUrl: 'Runcrate API endpoint',
       llmSILICONFLOWApiKey: 'Apply at https://cloud.siliconflow.cn/account/ak',
       llmStepFunApiKey: 'Apply on the StepFun platform',
       llmStepFunApiUrl: 'StepFun API endpoint',

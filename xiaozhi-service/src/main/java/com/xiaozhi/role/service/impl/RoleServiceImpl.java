@@ -62,7 +62,7 @@ public class RoleServiceImpl implements RoleService {
         String cacheKey = RoleCacheKeys.of(roleId);
         Cache cache = cacheManager.getCache(CacheNames.ROLE);
         return cacheHelper.getWithLock(
-            "role:" + cacheKey,
+            RoleCacheKeys.lockOf(roleId),
             () -> cache == null ? null : cache.get(cacheKey, RoleBO.class),
             () -> {
                 RoleDO roleDO = getRole(roleId);
@@ -88,6 +88,14 @@ public class RoleServiceImpl implements RoleService {
             .map(roleConvert::toBO)
             .toList();
         return roles;
+    }
+
+    @Override
+    public long countByModelId(Integer modelId) {
+        if (modelId == null) {
+            return 0;
+        }
+        return roleMapper.selectCount(new LambdaQueryWrapper<RoleDO>().eq(RoleDO::getModelId, modelId));
     }
 
     @Override

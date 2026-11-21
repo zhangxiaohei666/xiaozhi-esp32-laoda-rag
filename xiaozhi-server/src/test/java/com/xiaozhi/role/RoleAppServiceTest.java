@@ -1,9 +1,11 @@
 package com.xiaozhi.role;
 
+import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.model.req.RoleCreateReq;
 import com.xiaozhi.common.model.req.RoleUpdateReq;
 import com.xiaozhi.common.model.resp.RoleResp;
 import com.xiaozhi.device.service.DeviceService;
+import com.xiaozhi.message.service.ConversationService;
 import com.xiaozhi.role.convert.RoleConvert;
 import org.mapstruct.factory.Mappers;
 import com.xiaozhi.role.domain.Role;
@@ -12,6 +14,7 @@ import com.xiaozhi.role.domain.vo.AudioConfig;
 import com.xiaozhi.role.domain.vo.LlmConfig;
 import com.xiaozhi.role.domain.vo.VoiceConfig;
 import com.xiaozhi.role.service.RoleService;
+import com.xiaozhi.summary.service.SummaryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,6 +27,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
@@ -53,6 +57,12 @@ class RoleAppServiceTest {
     @Mock
     private DeviceService deviceService;
 
+    @Mock
+    private SummaryService summaryService;
+
+    @Mock
+    private ConversationService conversationService;
+
     private RoleAppService roleAppService;
 
     @BeforeEach
@@ -62,6 +72,34 @@ class RoleAppServiceTest {
         ReflectionTestUtils.setField(roleAppService, "roleRepository", roleRepository);
         ReflectionTestUtils.setField(roleAppService, "roleConvert", roleConvert);
         ReflectionTestUtils.setField(roleAppService, "deviceService", deviceService);
+        ReflectionTestUtils.setField(roleAppService, "summaryService", summaryService);
+        ReflectionTestUtils.setField(roleAppService, "conversationService", conversationService);
+    }
+
+    @Test
+    void deleteAlsoDropsWhatDevicesLeftUnderTheRole() {
+        when(deviceService.page(1, 1, null, null, null, null, ROLE_ID, null))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1, 1));
+
+        roleAppService.delete(ROLE_ID);
+
+        verify(roleRepository).delete(ROLE_ID);
+        // 改绑走的设备在这个角色下留着摘要，角色删了就再也换不回来
+        verify(summaryService).deleteByRoleId(ROLE_ID);
+        // 网页会话没有角色就续不上，一并删；设备消息是设备的历史，保留。
+        verify(conversationService).deleteByRole(ROLE_ID);
+    }
+
+    @Test
+    void deleteRefusedWhileDevicesAreBoundTouchesNothing() {
+        when(deviceService.page(1, 1, null, null, null, null, ROLE_ID, null))
+                .thenReturn(new PageResult<>(List.of(), 2L, 1, 1));
+
+        assertThatThrownBy(() -> roleAppService.delete(ROLE_ID)).isInstanceOf(IllegalStateException.class);
+
+        verify(roleRepository, never()).delete(any());
+        verify(summaryService, never()).deleteByRoleId(any());
+        verify(conversationService, never()).deleteByRole(any());
     }
 
     @Test

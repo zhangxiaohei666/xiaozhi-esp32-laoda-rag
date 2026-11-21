@@ -40,7 +40,7 @@ import lombok.extern.slf4j.Slf4j;
  * SessionExitFunction 正常返回一个GoodbyeMessage给到 DialogueService, 然后由DialogueService处理语音合成及播放。
  * sendFarewell 有两个调用方：用户说再见走 DialogueService 的告别语，空闲超时走 checkInactiveSessions 的超时提示语。
  *
- * @see com.xiaozhi.event.ChatAbortedEvent
+ * @see com.xiaozhi.dialogue.event.ChatAbortedEvent
  * 用户真正关心的是从说完话到开始播音的时间间隔。不是TTS的生成时间。所以Player需要有一个Instant。
  *
  * 问：是否需要实现Runnable接口？
@@ -242,14 +242,19 @@ public abstract class Player {
      *
      * @param referencePcm 该帧编码前的 PCM，直接作为服务端 AEC 的参考信号；
      *                     缓存命中直读的帧没有源 PCM，传 null 由 AEC 侧解码补上
+     * @param reply        是否本轮回复的帧，只有回复帧写进录音
      */
-    protected void sendOpusFrame(byte[] opusFrame, byte[] referencePcm)  {
+    protected void sendOpusFrame(byte[] opusFrame, byte[] referencePcm, boolean reply)  {
         // 毫秒级时间戳（取低 32 位），随帧头下发；设备播放后在上行帧回显，用于 AEC 参考对齐
         long timestamp = DateUtils.millis() & 0xFFFFFFFFL;
         messageService.sendBinaryMessage(session, opusFrame, timestamp);
         // log.info("发送Opus帧数据: {}", opusFrame.length);
         if (opusRecorder != null) {
-            opusRecorder.onSendOpusFrame(opusFrame, referencePcm, timestamp);
+            if (reply) {
+                opusRecorder.onSendOpusFrame(opusFrame, referencePcm, timestamp);
+            } else {
+                opusRecorder.onSendUnrecordedFrame(opusFrame, referencePcm, timestamp);
+            }
         }
     }
 
@@ -270,6 +275,32 @@ public abstract class Player {
      */
     protected void sendEmotion( String emotion) {
         messageService.sendEmotion(session, emotion);
+    }
+
+    /**
+     * 打断：停掉在播和待播的，无条件告诉设备停播（设备可能在开播前就发来 abort），录音收尾，
+     * 告别途中被打断就把告别后的收尾（关会话）照做。停播失败也要把后面做完，否则设备收不到 tts stop，
+     * 一直停在说话状态不重开麦。设备状态由打断方按打断原因切：插话打断时新一轮的识别已经在跑
+     */
+    public void abort() {
+        try {
+            stop();
+        } catch (Exception e) {
+            log.warn("停止播放器失败 - SessionId: {}: {}", session.getSessionId(), e.getMessage());
+        }
+        try {
+            messageService.sendTtsMessage(session, null, "stop");
+            isPlaying = false;
+        } finally {
+            if (opusRecorder != null) {
+                opusRecorder.onSendStop();
+            }
+        }
+        Runnable afterChat = functionAfterChat;
+        if (afterChat != null) {
+            functionAfterChat = null;
+            afterChat.run();
+        }
     }
 
     /**
