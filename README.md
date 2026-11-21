@@ -6,15 +6,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-server-java/issues">反馈问题</a>
+  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-laoda-rag/issues">反馈问题</a>
   · <a href="#quickstart">快速开始</a>
   · <a href="#whatsnew">本仓库新增了什么</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-server-java">
-    <img alt="stars" src="https://img.shields.io/github/stars/zhangxiaohei666/xiaozhi-esp32-server-java" /></a>
-  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-server-java/blob/main/LICENSE">
+  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-laoda-rag">
+    <img alt="stars" src="https://img.shields.io/github/stars/zhangxiaohei666/xiaozhi-esp32-laoda-rag" /></a>
+  <a href="https://github.com/zhangxiaohei666/xiaozhi-esp32-laoda-rag/blob/main/LICENSE">
     <img alt="License" src="https://img.shields.io/badge/license-MIT-white?labelColor=black" /></a>
 </p>
 
