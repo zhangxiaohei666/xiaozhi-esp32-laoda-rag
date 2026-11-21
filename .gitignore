@@ -113,3 +113,6 @@ logs/
 
 # study.md = 个人学习笔记，不属于项目代码
 study.md
+
+# 防手滑：fat jar 285MB，GitHub 单文件上限 100MB
+*.jar

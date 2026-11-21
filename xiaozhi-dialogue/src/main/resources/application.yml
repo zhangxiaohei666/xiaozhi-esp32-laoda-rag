@@ -30,7 +30,7 @@ spring:
 # Sa-Token（共用字段见 application-common.yml）
 # ============================================================
 sa-token:
-  jwt-secret-key: xiaozhi-esp32-server-java-jwt-secret-key
+  jwt-secret-key: ${JWT_SECRET_KEY:}
 
 # ============================================================
 # 图书馆座位查询工具（Function Calling）
