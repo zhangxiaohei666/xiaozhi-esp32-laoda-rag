@@ -69,6 +69,40 @@ public class DocumentIngestService {
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
 
     /**
+     * 单个标题的字数上限（2026-11-21 补，阈值 45 按实测语料标定）。
+     *
+     * <p>实测 38 篇语料 56 个标题：最长 43 字（"关于南阳理工学院2025年7月1日—2026年6月30日
+     * 本科班级学业导师考核结果的公示"），45 = 43 + 2 余量 → 当前语料零截断。
+     * 拦的是 50+ 的病态标题（把整段话写成标题）。
+     *
+     * <p>超过上限时<b>保留末尾</b> —— 中文公文标题的信息重心在后半段
+     * （"…的公示"的"公示"才是类别词），前半段常是"关于开展/关于印发"套话。
+     * ⚠️ 但"实义词在尾部"不是普适规律（机构名常在开头），截断有语义损失，
+     * 所以上限放得比常见标题宽，让规则保持"保险丝"定位而非常态过滤器。
+     *
+     * <p>约束关系：PATH_MAX_CHARS ≥ 本值 + 17（两层常见短标题 + 分隔符），
+     * 否则"长标题挂树里"必然触发路径截断，本上限形同虚设。
+     */
+    private static final int HEADING_MAX_CHARS = 45;
+
+    /**
+     * 整条标题路径（层级栈拼接后）的字数上限（2026-11-21 补）。
+     *
+     * <p>防"教材章节树"累积超长：每个单标题都短，但 h1>h2>h3>h4 叠起来轻松破 80 字。
+     * 超过上限时<b>从最外层开始丢</b> —— 外层往往是"校务公开""通知公告"这类泛目录词，
+     * 信息量最低；最内层是最具体的标题，必须保。
+     *
+     * <p>62 = 45（单标题上限）+ 17（两层常见短标题 4+4 字 + 分隔符）：
+     * 保证"实测最长的 43 字标题挂在树里"不触发路径截断。
+     *
+     * <p>⚠️ 两个限制缺一不可，防的是不同的失效模式：
+     * 只做单标题上限 → 深层叠加漏（每个都 ≤45，叠 4 层 180 字）；
+     * 只做路径上限 → 单点爆长漏（45 字合规、50 字也合规）。
+     * 当前语料实测最坏路径 43 字 → 全库零截断，规则是保险丝不是常态过滤器。
+     */
+    private static final int PATH_MAX_CHARS = 62;
+
+    /**
      * 详细追踪开关（读代码调试用）。
      *
      * <p>开启方式：环境变量 {@code KNOWLEDGE_DEBUG_TRACE=true}（或 application.yml 里同名配置）。
@@ -377,8 +411,8 @@ public class DocumentIngestService {
                 while (headingStack.size() >= level) {
                     headingStack.remove(headingStack.size() - 1);
                 }
-                headingStack.add(matcher.group(2).trim());
-                currentHeading = String.join(" > ", headingStack);
+                headingStack.add(capHeadingText(matcher.group(2).trim()));
+                currentHeading = capHeadingPath(String.join(" > ", headingStack));
                 if (traceEnabled) {
                     log.info("   [trace] 行{}: 章节路径更新为「{}」", lineNo, currentHeading);
                 }
@@ -400,6 +434,51 @@ public class DocumentIngestService {
         }
         flush(out, buffer, currentHeading);
         return out;
+    }
+
+    /**
+     * 单标题截断（{@link #HEADING_MAX_CHARS}）：超过上限保留末尾，加 "…" 标记。
+     *
+     * <p>中文公文标题的信息重心在后半段（"关于…考核结果的公示"的"公示"才是类别词），
+     * 前半段常是"关于开展/关于印发"套话，所以截头不截尾。
+     * 标记占 1 字（预留：截 29 字 + "…" = 30），截后总长仍 ≤ 上限。
+     */
+    private static String capHeadingText(String title) {
+        if (title == null || title.length() <= HEADING_MAX_CHARS) {
+            return title;
+        }
+        String kept = title.substring(title.length() - (HEADING_MAX_CHARS - 1));
+        log.info("   [trace] 标题 {} 字超上限 {} → 保留末尾: {}",
+                title.length(), HEADING_MAX_CHARS, "…" + kept);
+        return "…" + kept;
+    }
+
+    /**
+     * 整条标题路径截断（{@link #PATH_MAX_CHARS}）：超上限时从最外层开始丢。
+     *
+     * <p>外层是"校务公开""通知公告"这类泛目录词，信息量最低；最内层是最具体的标题，必须保。
+     * 按 " > " 分段逐层丢弃，直到长度合规；若最内层自身超 {@link #HEADING_MAX_CHARS}，
+     * 会再经 {@link #capHeadingText} 截断（它自带 "…" 标记，标记紧贴被截的位置）。
+     * 全部丢完仍超的极端情况只留最内层。
+     */
+    private static String capHeadingPath(String joinedPath) {
+        if (joinedPath == null || joinedPath.length() <= PATH_MAX_CHARS) {
+            return joinedPath;
+        }
+        String[] parts = joinedPath.split(" > ");
+        for (int drop = 0; drop < parts.length - 1; drop++) {
+            String candidate = String.join(" > ",
+                    java.util.Arrays.copyOfRange(parts, drop + 1, parts.length));
+            if (candidate.length() <= PATH_MAX_CHARS) {
+                log.info("   [trace] 标题路径 {} 字超上限 {} → 丢最外层 {} 层: {}",
+                        joinedPath.length(), PATH_MAX_CHARS, drop + 1, candidate);
+                // 最内层若自身超 30（在栈更新时已截过一次并带 "…"），这里原样保留标记
+                return candidate;
+            }
+        }
+        String last = parts[parts.length - 1];
+        log.info("   [trace] 标题路径超上限且丢层无效 → 只留最内层: {}", last);
+        return last;
     }
 
     /**
