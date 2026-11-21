@@ -1,5 +1,6 @@
 package com.xiaozhi.communication.common;
 
+import com.xiaozhi.communication.WebChatDevice;
 import com.xiaozhi.communication.domain.*;
 import com.xiaozhi.communication.domain.mcp.device.initialize.DeviceMcpPayload;
 import com.xiaozhi.communication.server.websocket.WebSocketSession;
@@ -24,12 +25,11 @@ import com.xiaozhi.ai.tts.TtsServiceFactory;
 import com.xiaozhi.enums.DeviceState;
 import com.xiaozhi.enums.ListenMode;
 import com.xiaozhi.enums.ListenState;
-import com.xiaozhi.event.ChatAbortedEvent;
+import com.xiaozhi.dialogue.event.AbortReason;
 import com.xiaozhi.role.service.RoleService;
 import com.xiaozhi.storage.service.StorageServiceFactory;
 import com.xiaozhi.utils.AudioUtils;
 import jakarta.annotation.Resource;
-import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 import org.springframework.util.ObjectUtils;
 import org.springframework.util.StringUtils;
@@ -79,8 +79,6 @@ public class MessageHandler {
     @Resource
     private RoleService roleService;
 
-    @Resource
-    private ApplicationContext applicationContext;
 
     @Resource
     private MessageSender messageService;
@@ -221,21 +219,18 @@ public class MessageHandler {
         }
         deviceId = device.getDeviceId();
         
-        // 检查是否是 user_chat_ 开头的虚拟设备，如果是则自动绑定
-        if (deviceId.startsWith("user_chat_")) {
+        // 网页聊天的虚拟设备没绑角色时，绑到用户的默认角色
+        Integer userId = WebChatDevice.userIdOf(deviceId);
+        if (userId != null) {
             try {
                 log.info("检测到虚拟设备 {}，尝试自动绑定", deviceId);
-                
-                // 提取用户ID
-                String userIdStr = deviceId.substring("user_chat_".length());
-                Integer userId = Integer.parseInt(userIdStr);
-                
+
                 RoleBO defaultRole = roleService.getDefaultOrFirstBO(userId);
                 Integer defaultRoleId = defaultRole != null ? defaultRole.getRoleId() : null;
                 
                 if (defaultRoleId != null) {
                     // 创建虚拟设备并绑定到默认角色
-                    deviceWriter.register(deviceId, "小助手", "web", userId, defaultRoleId);
+                    deviceService.registerWebChat(userId, defaultRoleId);
                     log.info("虚拟设备 {} 自动绑定成功，角色ID: {}", deviceId, defaultRoleId);
                     
                     // 重新查询设备信息
@@ -259,8 +254,6 @@ public class MessageHandler {
                 } else {
                     log.warn("用户 {} 没有可用的角色，无法自动绑定虚拟设备", userId);
                 }
-            } catch (NumberFormatException e) {
-                log.error("解析虚拟设备ID失败: {}", deviceId, e);
             } catch (Exception e) {
                 log.error("自动绑定虚拟设备失败: {}", deviceId, e);
             }
@@ -444,8 +437,7 @@ public class MessageHandler {
                 // 检测聊天文本输入 — 确保 AEC 在 TTS 开始前已初始化
                 if (aecService != null) aecService.initSession(sessionId);
                 if (player != null ) {
-                    String abortDeviceId = chatSession.getDevice() != null ? chatSession.getDevice().getDeviceId() : null;
-                    applicationContext.publishEvent(new ChatAbortedEvent(this, chatSession.getSessionId(), abortDeviceId, null));
+                    dialogueService.abortDialogue(chatSession, AbortReason.TEXT_INPUT);
                 }
                 // 回执按序留在读线程上发出；建 Persona 与启动 LLM 要走工具路由的 embedding、
                 // RAG 的向量检索和一次 LLM 建连，占住读线程会让设备随后发来的 abort、listen stop 一直排队
@@ -477,8 +469,9 @@ public class MessageHandler {
     }
 
     private void handleAbortMessage(ChatSession session, AbortMessage message) {
-        String deviceId = session.getDevice() != null ? session.getDevice().getDeviceId() : null;
-        applicationContext.publishEvent(new ChatAbortedEvent(this, session.getSessionId(), deviceId, message.getReason()));
+        // 设备给的原因只记日志，收尾怎么做不看它
+        log.info("设备要求中止对话 - SessionId: {}, reason: {}", session.getSessionId(), message.getReason());
+        dialogueService.abortDialogue(session, AbortReason.DEVICE_ABORT);
     }
 
     private void handleIotMessage(ChatSession chatSession, IotMessage message) {
@@ -505,8 +498,7 @@ public class MessageHandler {
         }
 
         // 中止正在进行的对话，停止TTS和音频发送。VAD/AEC 由随后的 closeSession 统一清理
-        String goodbyeDeviceId = session.getDevice() != null ? session.getDevice().getDeviceId() : null;
-        applicationContext.publishEvent(new ChatAbortedEvent(this, session.getSessionId(), goodbyeDeviceId, "设备主动退出"));
+        dialogueService.abortDialogue(session, AbortReason.DEVICE_GOODBYE);
 
         sessionManager.closeSession(session);
     }

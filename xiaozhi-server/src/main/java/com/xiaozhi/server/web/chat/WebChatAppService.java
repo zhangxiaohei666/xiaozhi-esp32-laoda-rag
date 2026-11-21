@@ -8,6 +8,8 @@ import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.model.ChatToken;
 import com.xiaozhi.common.model.bo.ConversationBO;
 import com.xiaozhi.common.model.bo.RoleBO;
+import com.xiaozhi.event.MemoryDeletedEvent;
+import com.xiaozhi.event.RoleUpdatedEvent;
 import com.xiaozhi.message.service.ConversationService;
 import com.xiaozhi.message.service.MessageService;
 import com.xiaozhi.role.service.RoleService;
@@ -17,6 +19,8 @@ import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 
@@ -107,12 +111,12 @@ public class WebChatAppService {
         String sessionId;
         if (resume) {
             // 另一个标签页已经开着这个会话时直接复用：再建一份会让两个 Conversation 各压缩一遍同一段历史
-            WebChatSession opened = sessions.get(resumeSessionId);
-            if (opened != null && Objects.equals(opened.userId, userId)) {
+            WebChatSession opened = openedSession(resumeSessionId, userId);
+            if (opened != null) {
                 opened.touch();
                 return resumeSessionId;
             }
-            assertSessionOwnedByUser(resumeSessionId, userId);
+            conversationService.checkAccess(resumeSessionId, userId);
             sessionId = resumeSessionId;
         } else {
             sessionId = UUID.randomUUID().toString();
@@ -144,17 +148,15 @@ public class WebChatAppService {
     }
 
     /**
-     * 校验待续接的 sessionId 是当前用户的 Web 会话。
-     * 存在不匹配时抛出 IllegalArgumentException。
+     * 进程里开着的会话，没开着返回 null。开着的会话可能还没落库，归属按开它的用户判；
+     * 落了库的按 {@link ConversationService#checkAccess} 判，两处结论一致。
      */
-    private void assertSessionOwnedByUser(String sessionId, Integer userId) {
-        ConversationBO conversation = conversationService.get(sessionId);
-        if (conversation == null) {
-            throw new IllegalArgumentException("会话不存在或已清除: " + sessionId);
+    private WebChatSession openedSession(String sessionId, Integer userId) {
+        WebChatSession session = sessions.get(sessionId);
+        if (session != null && !Objects.equals(session.userId, userId)) {
+            throw new UnauthorizedException("会话不属于当前用户: " + sessionId);
         }
-        if (!userId.equals(conversation.getUserId())) {
-            throw new IllegalArgumentException("会话不属于当前用户: " + sessionId);
-        }
+        return session;
     }
 
     /**
@@ -227,20 +229,12 @@ public class WebChatAppService {
      * 只有还没落库的新会话（open 后一句没说就被回收或重启）才会真的找不到，这时无从得知角色，只能报错。
      */
     private WebChatSession resolveSession(String sessionId, Integer userId) {
-        WebChatSession cached = sessions.get(sessionId);
+        WebChatSession cached = openedSession(sessionId, userId);
         if (cached != null) {
-            if (!Objects.equals(cached.userId, userId)) {
-                throw new UnauthorizedException("会话不属于当前用户: " + sessionId);
-            }
             return cached;
         }
+        conversationService.checkAccess(sessionId, userId);
         ConversationBO saved = conversationService.get(sessionId);
-        if (saved == null) {
-            throw new IllegalArgumentException("会话不存在或已删除: " + sessionId);
-        }
-        if (!userId.equals(saved.getUserId())) {
-            throw new UnauthorizedException("会话不属于当前用户: " + sessionId);
-        }
         RoleBO role = roleService.getBO(saved.getRoleId());
         if (role == null) {
             throw new IllegalArgumentException("角色不存在: " + saved.getRoleId());
@@ -276,12 +270,9 @@ public class WebChatAppService {
      * userId 须与会话创建者一致，防止跨用户关闭他人会话（拒绝服务）。
      */
     public void closeSession(String sessionId, Integer userId) {
-        WebChatSession session = sessions.get(sessionId);
+        WebChatSession session = openedSession(sessionId, userId);
         if (session == null) {
             return;
-        }
-        if (!Objects.equals(session.userId, userId)) {
-            throw new UnauthorizedException("会话不属于当前用户: " + sessionId);
         }
         sessions.remove(sessionId);
         // 剩下的对话压成摘要，否则没触发过压缩的短会话永远进不了摘要
@@ -307,6 +298,48 @@ public class WebChatAppService {
         List<String> deleted = conversationService.delete(userId, sessionIds);
         log.info("Web 聊天会话已删除: userId={}, sessionIds={}", userId, deleted);
         return deleted.size();
+    }
+
+    /**
+     * 记忆管理里删了网页聊天的摘要：开着的会话丢掉手里的记忆快照，按库里现状重开一份。
+     * 删除接口就在本进程，本地监听即可；不直接移出会话表，还没落库的新会话移掉之后下一句就找不到了
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onMemoryDeleted(MemoryDeletedEvent event) {
+        sessions.replaceAll((sessionId, session) -> {
+            if (!ownerId(session.userId).equals(event.getOwnerId()) || !Objects.equals(session.roleId, event.getRoleId())) {
+                return session;
+            }
+            RoleBO role = roleService.getBO(session.roleId);
+            if (role == null) {
+                return session;
+            }
+            session.conversation.discard();
+            log.info("记忆已删，重开网页聊天会话: sessionId={}", sessionId);
+            return new WebChatSession(textChatService.openConversation(event.getOwnerId(), session.userId, role, sessionId),
+                    session.userId, session.roleId, session.saved);
+        });
+    }
+
+    /**
+     * 角色删了：它的会话记录已随角色删掉，开着的会话丢掉、不压缩写回，否则下一句会把消息写到已删的会话上。
+     * 只是改了角色时什么都不做，下一轮会重新取角色
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onRoleUpdated(RoleUpdatedEvent event) {
+        if (roleService.getBO(event.getRoleId()) != null) {
+            return;
+        }
+        for (String sessionId : sessions.keySet()) {
+            sessions.computeIfPresent(sessionId, (id, session) -> {
+                if (!Objects.equals(session.roleId, event.getRoleId())) {
+                    return session;
+                }
+                session.conversation.discard();
+                log.info("角色已删，移除网页聊天会话: sessionId={}", id);
+                return null;
+            });
+        }
     }
 
     /**

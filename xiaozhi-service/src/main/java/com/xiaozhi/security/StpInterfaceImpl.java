@@ -34,7 +34,7 @@ public class StpInterfaceImpl implements StpInterface {
     @Override
     public List<String> getPermissionList(Object loginId, String loginType) {
         try {
-            return permissionService.listKeysByUserId(parseUserId(loginId));
+            return permissionService.listKeysByUserId(CurrentUser.parse(loginId));
         } catch (Exception e) {
             log.error("获取用户权限失败: {}", e.getMessage());
             return new ArrayList<>();
@@ -46,11 +46,12 @@ public class StpInterfaceImpl implements StpInterface {
     public List<String> getRoleList(Object loginId, String loginType) {
         List<String> roleKeys = new ArrayList<>();
         try {
-            UserBO user = userService.getBO(parseUserId(loginId));
+            Integer userId = CurrentUser.parse(loginId);
+            UserBO user = userService.getBO(userId);
             if (user == null) {
                 return roleKeys;
             }
-            if (UserBO.ADMIN_YES.equals(user.getIsAdmin())) {
+            if (userService.isAdmin(userId)) {
                 roleKeys.add(ADMIN_ROLE_KEY);
             }
             String roleKey = authRoleService.getRoleKey(user.getAuthRoleId());
@@ -61,9 +62,5 @@ public class StpInterfaceImpl implements StpInterface {
             log.error("获取用户角色失败: {}", e.getMessage());
         }
         return roleKeys;
-    }
-
-    private static Integer parseUserId(Object loginId) {
-        return Integer.parseInt(loginId.toString());
     }
 }

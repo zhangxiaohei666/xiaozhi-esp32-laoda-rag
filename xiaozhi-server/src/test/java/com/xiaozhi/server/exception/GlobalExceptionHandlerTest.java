@@ -8,7 +8,6 @@ import com.xiaozhi.common.exception.OperationFailedException;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.exception.UserPasswordNotMatchException;
-import com.xiaozhi.common.exception.UsernameNotFoundException;
 import com.xiaozhi.common.web.ApiResponse;
 import com.xiaozhi.common.web.ResultStatus;
 import com.xiaozhi.support.ControllerTestSupport;
@@ -64,8 +63,9 @@ class GlobalExceptionHandlerTest extends ControllerTestSupport {
 
     private static Stream<Arguments> exceptionMappings() {
         return Stream.of(
-            Arguments.of(new UsernameNotFoundException("alice"), 400, "用户名不存在"),
-            Arguments.of(new UserPasswordNotMatchException("bad"), 400, "用户密码不正确"),
+            // 登录失败不区分账号不存在与密码不对，文案由抛出方给；没给时兜底同一句
+            Arguments.of(new UserPasswordNotMatchException("账号或密码错误"), 400, "账号或密码错误"),
+            Arguments.of(new UserPasswordNotMatchException(), 400, "账号或密码错误"),
             Arguments.of(new UnauthorizedException("无权访问该配置"), 403, "无权访问该配置"),
             Arguments.of(new NotLoginException("未提供token", "login", NotLoginException.NOT_TOKEN),
                 401, "登录已过期，请重新登录"),
@@ -79,10 +79,22 @@ class GlobalExceptionHandlerTest extends ControllerTestSupport {
             Arguments.of(new DuplicateKeyException("Duplicate entry '1:llm:chat' for key 'sys_config.uk_config_default'"),
                 409, "数据重复，操作未生效"),
             Arguments.of(new OperationFailedException("保存MCP工具排除配置失败"), 500, "保存MCP工具排除配置失败"),
-            Arguments.of(new OperationFailedException(""), 500, "操作失败，请稍后重试"),
-            // 未单独映射的运行时异常统一兜底，内部细节不外泄
-            Arguments.of(new RuntimeException("不该外泄的内部细节"), 500, "服务器错误，请联系管理员")
+            Arguments.of(new OperationFailedException(""), 500, "操作失败，请稍后重试")
         );
+    }
+
+    /**
+     * 未单独映射的异常统一兜底，内部细节不外泄；业务码与 500 分开，
+     * 前端据此认出这是兜底文案而不是写给用户的原文，改用调用方自己的失败提示
+     */
+    @Test
+    void unexpectedExceptionCarriesItsOwnCodeSoTheClientKnowsItIsTheFallback() throws Exception {
+        controller.toThrow = new RuntimeException("不该外泄的内部细节");
+
+        mockMvc.perform(get("/probe/throw"))
+            .andExpect(status().isInternalServerError())
+            .andExpect(jsonPath("$.code").value(ResultStatus.UNEXPECTED_ERROR))
+            .andExpect(jsonPath("$.message").value("服务器错误，请联系管理员"));
     }
 
     /** 待确认不是失败：走 HTTP 200 前端才不会既弹错误提示又弹确认框 */

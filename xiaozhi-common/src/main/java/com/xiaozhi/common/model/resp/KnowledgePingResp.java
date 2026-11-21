@@ -20,7 +20,7 @@ public class KnowledgePingResp {
     @Schema(description = "RAG 总开关是否开启")
     private Boolean enabled;
 
-    @Schema(description = "Qdrant 地址，如 192.168.10.132:6334")
+    @Schema(description = "Qdrant 地址，如 192.0.2.10:6334")
     private String qdrantAddress;
 
     @Schema(description = "集合名")

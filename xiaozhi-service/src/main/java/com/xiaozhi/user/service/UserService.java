@@ -11,6 +11,9 @@ public interface UserService {
 
     UserBO getBO(Integer userId);
 
+    /** 管理员只有这一种定义：sys_user.isAdmin，与 userId 是几无关 */
+    boolean isAdmin(Integer userId);
+
     UserBO getByUsername(String username);
 
     UserBO getByEmail(String email);
@@ -25,6 +28,9 @@ public interface UserService {
      * @return 落库后的完整用户信息，调用方不必再查一遍
      */
     UserBO update(UserBO user);
+
+    /** 登录成功后记下时间与来源 IP。只写这两列：拿登录时读到的整份资料回写，会盖掉同一时刻管理端做的禁用、改密 */
+    void recordLogin(Integer userId, String loginIp);
 
     /** 账号 state 为禁用时抛 UnauthorizedException，user 为 null 时不判断。 */
     void requireEnabled(UserBO user);

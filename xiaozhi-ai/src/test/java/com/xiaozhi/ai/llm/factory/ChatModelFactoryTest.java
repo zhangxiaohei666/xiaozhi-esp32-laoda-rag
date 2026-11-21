@@ -2,7 +2,8 @@ package com.xiaozhi.ai.llm.factory;
 
 import com.xiaozhi.common.model.bo.ConfigBO;
 import com.xiaozhi.common.model.bo.RoleBO;
-import com.xiaozhi.common.port.ConfigLookup;
+import com.xiaozhi.config.service.ConfigService;
+import com.xiaozhi.event.AiConfigChangedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,9 +16,11 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 /**
@@ -29,7 +32,7 @@ import static org.mockito.Mockito.when;
 class ChatModelFactoryTest {
 
     @Mock
-    private ConfigLookup configLookup;
+    private ConfigService configService;
 
     @Mock
     private ChatModelProvider stubProvider;
@@ -57,21 +60,21 @@ class ChatModelFactoryTest {
         when(openAiProvider.getProviderName()).thenReturn("openai");
 
         chatModelFactory = new ChatModelFactory(List.of(stubProvider, openAiProvider));
-        ReflectionTestUtils.setField(chatModelFactory, "configLookup", configLookup);
+        ReflectionTestUtils.setField(chatModelFactory, "configService", configService);
     }
 
     @Test
-    void getChatModelUsesConfigLookupAndMatchedProvider() {
+    void getChatModelUsesTheRolesConfigAndMatchedProvider() {
         RoleBO role = new RoleBO();
         role.setModelId(11);
         ConfigBO config = new ConfigBO().setConfigId(11).setProvider("stub");
-        when(configLookup.getConfig(11)).thenReturn(config);
+        when(configService.getConfig(11)).thenReturn(config);
         when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
 
         ChatModel result = chatModelFactory.getChatModel(role);
 
         assertThat(result).isSameAs(stubModel);
-        verify(configLookup).getConfig(11);
+        verify(configService).getConfig(11);
         verify(stubProvider).createChatModel(config, role);
     }
 
@@ -80,7 +83,7 @@ class ChatModelFactoryTest {
         RoleBO role = new RoleBO();
         role.setModelId(22);
         ConfigBO config = new ConfigBO().setConfigId(22).setProvider("unknown");
-        when(configLookup.getConfig(22)).thenReturn(config);
+        when(configService.getConfig(22)).thenReturn(config);
         when(openAiProvider.createChatModel(any(), any())).thenReturn(fallbackModel);
 
         ChatModel result = chatModelFactory.getChatModel(role);
@@ -89,10 +92,60 @@ class ChatModelFactoryTest {
         verify(openAiProvider).createChatModel(config, role);
     }
 
+    /**
+     * 角色绑定的对话模型被停用后不能再拿它外呼计费；回退默认对话模型，与 TTS 停用时回退默认的处理一致
+     */
+    @Test
+    void disabledChatModelFallsBackToTheDefaultOne() {
+        RoleBO role = new RoleBO();
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setProvider("stub")
+            .setState(ConfigBO.STATE_DISABLED));
+        ConfigBO defaultConfig = new ConfigBO().setConfigId(99).setProvider("stub");
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue())).thenReturn(defaultConfig);
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
+
+        chatModelFactory.getChatModel(role);
+
+        verify(stubProvider).createChatModel(defaultConfig, role);
+    }
+
+    /** 回退出来的模型挂在默认配置的名下：默认配置变更时它要跟着失效，原配置重新启用时不能继续用它 */
+    @Test
+    void fallbackModelIsCachedUnderTheDefaultConfig() {
+        RoleBO role = new RoleBO();
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue()))
+            .thenReturn(new ConfigBO().setConfigId(99).setProvider("stub"));
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel, fallbackModel);
+
+        chatModelFactory.getChatModel(role);
+        chatModelFactory.removeCache(99);
+        ChatModel rebuilt = chatModelFactory.getChatModel(role);
+
+        assertThat(rebuilt).isSameAs(fallbackModel);
+    }
+
+    @Test
+    void disabledChatModelWithoutADefaultFailsWithAReadableMessage() {
+        RoleBO role = new RoleBO();
+        role.setRoleName("小助手");
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue())).thenReturn(null);
+
+        assertThatThrownBy(() -> chatModelFactory.getChatModel(role))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("小助手")
+            .hasMessageContaining("已停用");
+        verify(stubProvider, never()).createChatModel(any(), any());
+    }
+
     @Test
     void getEmbeddingModelIsCachedByConfigId() {
         ConfigBO config = new ConfigBO().setConfigId(33).setProvider("stub");
-        when(configLookup.getConfig(33)).thenReturn(config);
+        when(configService.getConfig(33)).thenReturn(config);
         when(stubProvider.createEmbeddingModel(config)).thenReturn(embeddingModel);
 
         EmbeddingModel first = chatModelFactory.getEmbeddingModel(33);
@@ -100,14 +153,14 @@ class ChatModelFactoryTest {
 
         assertThat(first).isSameAs(embeddingModel);
         assertThat(second).isSameAs(first);
-        verify(configLookup, times(1)).getConfig(33);
+        verify(configService, times(1)).getConfig(33);
         verify(stubProvider, times(1)).createEmbeddingModel(config);
     }
 
     @Test
     void removeCacheRebuildsEmbeddingModel() {
         ConfigBO config = new ConfigBO().setConfigId(44).setProvider("stub");
-        when(configLookup.getConfig(44)).thenReturn(config);
+        when(configService.getConfig(44)).thenReturn(config);
         when(stubProvider.createEmbeddingModel(config)).thenReturn(embeddingModel, rebuiltEmbeddingModel);
 
         EmbeddingModel before = chatModelFactory.getEmbeddingModel(44);
@@ -124,7 +177,7 @@ class ChatModelFactoryTest {
         RoleBO role = new RoleBO();
         role.setModelId(55);
         ConfigBO config = new ConfigBO().setConfigId(55).setProvider("stub");
-        when(configLookup.getConfig(55)).thenReturn(config);
+        when(configService.getConfig(55)).thenReturn(config);
         when(stubProvider.createChatModel(config, role)).thenReturn(stubModel);
 
         ChatModel first = chatModelFactory.getChatModel(role);
@@ -143,8 +196,8 @@ class ChatModelFactoryTest {
         otherRole.setModelId(11);
         ConfigBO config = new ConfigBO().setConfigId(1).setProvider("stub");
         ConfigBO otherConfig = new ConfigBO().setConfigId(11).setProvider("stub");
-        when(configLookup.getConfig(1)).thenReturn(config);
-        when(configLookup.getConfig(11)).thenReturn(otherConfig);
+        when(configService.getConfig(1)).thenReturn(config);
+        when(configService.getConfig(11)).thenReturn(otherConfig);
         when(stubProvider.createChatModel(config, role)).thenReturn(stubModel, fallbackModel);
         when(stubProvider.createChatModel(otherConfig, otherRole)).thenReturn(stubModel);
 
@@ -159,14 +212,32 @@ class ChatModelFactoryTest {
     }
 
     @Test
+    void credentialChangeRebuildsTheAgentsHangingOnIt() {
+        RoleBO role = new RoleBO();
+        role.setModelId(60);
+        ConfigBO agent = new ConfigBO().setConfigId(60).setProvider("stub");
+        ConfigBO credential = new ConfigBO().setConfigId(5).setConfigType("agent").setProvider("stub");
+        when(configService.getConfig(60)).thenReturn(agent);
+        when(configService.getBO(5)).thenReturn(credential);
+        when(configService.listAgentModels(credential)).thenReturn(List.of(agent));
+        when(stubProvider.createChatModel(agent, role)).thenReturn(stubModel, fallbackModel);
+
+        chatModelFactory.getChatModel(role);
+        chatModelFactory.onAiConfigChanged(new AiConfigChangedEvent(this, "agent", 5));
+
+        // 缓存里那个实例还拿着改前的凭据
+        assertThat(chatModelFactory.getChatModel(role)).isSameAs(fallbackModel);
+    }
+
+    @Test
     void getVisionModelUsesDefaultLookup() {
         ConfigBO config = new ConfigBO().setConfigId(33).setProvider("stub");
-        when(configLookup.getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue())).thenReturn(config);
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue())).thenReturn(config);
         when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
 
         ChatModel result = chatModelFactory.getVisionModel();
 
         assertThat(result).isSameAs(stubModel);
-        verify(configLookup).getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue());
+        verify(configService).getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue());
     }
 }

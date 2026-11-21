@@ -27,6 +27,7 @@ import com.xiaozhi.user.service.UserService;
 import com.xiaozhi.user.service.WxLoginService;
 import com.xiaozhi.verifycode.VerifyCodeAppService;
 import com.xiaozhi.verifycode.service.VerifyCodeService;
+import com.xiaozhi.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -63,7 +64,7 @@ public class UserController extends BaseController {
     @GetMapping("/check-token")
     @Operation(summary = "检查Token有效性", description = "验证当前Token是否有效，有效则返回用户信息")
     public ApiResponse<LoginResp> checkToken() {
-        Integer userId = StpUtil.getLoginIdAsInt();
+        Integer userId = CurrentUser.id();
         LoginResp response = userAppService.buildLoginResp(userId, StpUtil.getTokenValue(), false);
         if (response == null) {
             return ApiResponse.unauthorized("用户不存在");
@@ -85,7 +86,7 @@ public class UserController extends BaseController {
     @Operation(summary = "用户名密码登录", description = "使用用户名/邮箱/手机号和密码进行登录")
     public ApiResponse<LoginResp> login(@Valid @RequestBody UserLoginReq req, HttpServletRequest request) {
         UserBO user = userAppService.login(req.getUsername(), req.getPassword());
-        userAppService.recordLoginInfo(user, trustedProxyPolicy.resolveClientIp(request));
+        userAppService.recordLoginInfo(user.getUserId(), trustedProxyPolicy.resolveClientIp(request));
 
         int expireSeconds = userAppService.getTokenExpireSeconds();
         StpUtil.login(user.getUserId(), expireSeconds);
@@ -103,7 +104,7 @@ public class UserController extends BaseController {
 
         UserBO user = userAppService.loginByTel(req.getTel());
 
-        userAppService.recordLoginInfo(user, trustedProxyPolicy.resolveClientIp(request));
+        userAppService.recordLoginInfo(user.getUserId(), trustedProxyPolicy.resolveClientIp(request));
 
         int expireSeconds = userAppService.getTokenExpireSeconds();
         StpUtil.login(user.getUserId(), expireSeconds);
@@ -127,7 +128,7 @@ public class UserController extends BaseController {
                 userAppService.loginByWechat(openId, unionId, new Gson().toJson(wxLoginInfo));
         UserBO user = result.user();
 
-        userAppService.recordLoginInfo(user, trustedProxyPolicy.resolveClientIp(request));
+        userAppService.recordLoginInfo(user.getUserId(), trustedProxyPolicy.resolveClientIp(request));
 
         int expireSeconds = userAppService.getTokenExpireSeconds();
         StpUtil.login(user.getUserId(), expireSeconds);
@@ -161,10 +162,11 @@ public class UserController extends BaseController {
 
     @PutMapping("/{userId}/state")
     @SaCheckPermission("system:user:api:update")
+    @CheckOwner(resource = "user", id = "#userId")
     @AuditLog(module = "用户管理", operation = "启用禁用账号")
     @Operation(summary = "启用/禁用账号", description = "state 取 1-正常、0-禁用；禁用后该账号已签发的 Token 立即失效")
     public ApiResponse<UserResp> updateState(@PathVariable Integer userId, @RequestParam String state) {
-        if (UserBO.STATE_DISABLED.equals(state) && StpUtil.getLoginIdAsInt() == userId.intValue()) {
+        if (UserBO.STATE_DISABLED.equals(state) && CurrentUser.id() == userId.intValue()) {
             throw new IllegalArgumentException("不能禁用当前登录账号");
         }
         UserResp updated = userAppService.updateState(userId, state);

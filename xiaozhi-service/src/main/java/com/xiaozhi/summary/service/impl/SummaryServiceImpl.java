@@ -5,13 +5,16 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.model.bo.SummaryBO;
+import com.xiaozhi.event.MemoryDeletedEvent;
 import com.xiaozhi.summary.convert.SummaryConvert;
 import com.xiaozhi.summary.dal.mysql.dataobject.SummaryDO;
 import com.xiaozhi.summary.dal.mysql.mapper.SummaryMapper;
+import com.xiaozhi.summary.model.SummaryProjection;
 import com.xiaozhi.summary.service.SummaryService;
 import com.xiaozhi.utils.DateUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +24,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -32,10 +36,14 @@ public class SummaryServiceImpl implements SummaryService {
     @Resource
     private SummaryConvert summaryConvert;
 
+    @Resource
+    private ApplicationEventPublisher eventPublisher;
+
     @Override
     public PageResult<SummaryBO> page(String deviceId, Integer userId, Integer roleId, int pageNo, int pageSize) {
-        IPage<SummaryBO> result = summaryMapper.selectPage(new Page<>(pageNo, pageSize), deviceId, userId, roleId);
-        return new PageResult<>(result.getRecords(), result.getTotal(), pageNo, pageSize);
+        IPage<SummaryProjection> result = summaryMapper.selectPage(new Page<>(pageNo, pageSize), deviceId, userId, roleId);
+        List<SummaryBO> rows = result.getRecords().stream().map(summaryConvert::toBO).toList();
+        return new PageResult<>(rows, result.getTotal(), pageNo, pageSize);
     }
 
     @Override
@@ -61,7 +69,11 @@ public class SummaryServiceImpl implements SummaryService {
         if (summaryId != null) {
             queryWrapper.eq(SummaryDO::getCreateTime, toLocalDateTime(Instant.ofEpochMilli(summaryId)));
         }
-        return summaryMapper.delete(queryWrapper);
+        int deleted = summaryMapper.delete(queryWrapper);
+        if (deleted > 0) {
+            eventPublisher.publishEvent(new MemoryDeletedEvent(this, deviceId, roleId));
+        }
+        return deleted;
     }
 
     @Override
@@ -100,6 +112,16 @@ public class SummaryServiceImpl implements SummaryService {
         }
         return summaryMapper.delete(new LambdaQueryWrapper<SummaryDO>()
             .eq(SummaryDO::getDeviceId, deviceId));
+    }
+
+    @Override
+    @Transactional
+    public int deleteByRoleId(Integer roleId) {
+        if (roleId == null) {
+            return 0;
+        }
+        return summaryMapper.delete(new LambdaQueryWrapper<SummaryDO>()
+            .eq(SummaryDO::getRoleId, roleId));
     }
 
     @Override

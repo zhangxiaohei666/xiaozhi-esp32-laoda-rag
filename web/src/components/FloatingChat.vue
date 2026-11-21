@@ -53,7 +53,7 @@ const selectedRoleId = ref<number | undefined>()
 // 头像
 const userAvatar = computed(() => getAvatarUrl(userStore.userInfo?.avatar))
 
-// 虚拟设备ID，与后端自动创建的格式一致；未登录时为空，此时不允许连接与切换角色
+// 虚拟设备ID，格式以后端 WebChatDevice（xiaozhi-common）为准；未登录时为空，此时不允许连接与切换角色
 const virtualDeviceId = computed(() =>
   userStore.userInfo?.userId ? `user_chat_${userStore.userInfo.userId}` : ''
 )
@@ -68,7 +68,8 @@ const wsConfig = computed(() => ({
 // 获取角色列表
 const fetchRoles = async () => {
   try {
-    const res = await queryRoles({})
+    // 后端默认只返回 10 条，不给分页会让角色多时选不到
+    const res = await queryRoles({ pageNo: 1, pageSize: 1000 })
     if (res.data?.list) {
       roleList.value = res.data.list
       // 设置默认选中的角色（第一个默认角色或第一个角色）

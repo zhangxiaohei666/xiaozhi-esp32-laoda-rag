@@ -20,7 +20,6 @@ import com.xiaozhi.communication.registry.DialogueServerRegistry;
 import com.xiaozhi.device.convert.DeviceConvert;
 import com.xiaozhi.device.domain.Device;
 import com.xiaozhi.device.domain.repository.DeviceRepository;
-import com.xiaozhi.device.domain.vo.VerifyCode;
 import com.xiaozhi.device.service.DeviceService;
 import com.xiaozhi.message.service.MessageService;
 import com.xiaozhi.role.service.RoleService;
@@ -28,13 +27,14 @@ import com.xiaozhi.summary.service.SummaryService;
 import com.xiaozhi.utils.DateUtils;
 import com.xiaozhi.utils.IpLocationClient;
 import com.xiaozhi.utils.CommonUtils;
+import com.xiaozhi.verifycode.service.VerifyCodeService;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +82,9 @@ public class DeviceAppService {
     private MessageService messageService;
 
     @Resource
+    private VerifyCodeService verifyCodeService;
+
+    @Resource
     private SummaryService summaryService;
 
     /**
@@ -101,15 +104,13 @@ public class DeviceAppService {
 
     @Transactional
     public DeviceResp create(DeviceCreateReq req, Integer userId) {
-        VerifyCode verifyCode = deviceRepository.findVerifyCodeByCode(req.getCode())
-                .orElseThrow(() -> new IllegalArgumentException("无效验证码"));
-
-        if (!StringUtils.hasText(verifyCode.deviceId())) {
+        VerifyCodeBO verifyCode = verifyCodeService.findValidByCode(req.getCode());
+        if (verifyCode == null || !StringUtils.hasText(verifyCode.getDeviceId())) {
             throw new IllegalArgumentException("无效验证码");
         }
 
         // 设备已存在：幂等返回（同一用户）或抛出冲突
-        Optional<Device> existingDevice = deviceRepository.findById(verifyCode.deviceId());
+        Optional<Device> existingDevice = deviceRepository.findById(verifyCode.getDeviceId());
         if (existingDevice.isPresent()) {
             Device d = existingDevice.get();
             if (userId != null && userId.equals(d.getUserId())) {
@@ -123,12 +124,12 @@ public class DeviceAppService {
             throw new IllegalStateException("没有配置角色");
         }
 
-        String name = StringUtils.hasText(verifyCode.type()) ? verifyCode.type() : "小智";
-        Device device = Device.newDevice(verifyCode.deviceId(), name, verifyCode.type(),
+        String name = StringUtils.hasText(verifyCode.getType()) ? verifyCode.getType() : "小智";
+        Device device = Device.newDevice(verifyCode.getDeviceId(), name, verifyCode.getType(),
                 userId, selectedRole.getRoleId());
         deviceRepository.save(device);
         // 绑定成功后作废该设备的验证码，避免同一个码在有效期内被继续试探
-        deviceRepository.invalidateVerifyCodes(verifyCode.deviceId());
+        verifyCodeService.deleteByDeviceId(verifyCode.getDeviceId());
 
         return deviceConvert.toResp(device, selectedRole.getRoleName());
     }
@@ -157,19 +158,21 @@ public class DeviceAppService {
             throw new IllegalStateException("设备已被其他用户绑定");
         }
 
-        VerifyCode verifyCode = deviceRepository.findVerifyCode(null, deviceId, null)
-                .orElseThrow(() -> new IllegalStateException("设备不在线，请先将设备开机联网后再扫码"));
+        VerifyCodeBO verifyCode = verifyCodeService.findValid(null, deviceId, null);
+        if (verifyCode == null) {
+            throw new IllegalStateException("设备不在线，请先将设备开机联网后再扫码");
+        }
 
         RoleBO selectedRole = roleService.getDefaultOrFirstBO(userId);
         if (selectedRole == null) {
             throw new IllegalStateException("没有配置角色");
         }
 
-        String name = StringUtils.hasText(verifyCode.type()) ? verifyCode.type() : "小智";
-        Device device = Device.newDevice(deviceId, name, verifyCode.type(),
+        String name = StringUtils.hasText(verifyCode.getType()) ? verifyCode.getType() : "小智";
+        Device device = Device.newDevice(deviceId, name, verifyCode.getType(),
                 userId, selectedRole.getRoleId());
         deviceRepository.save(device);
-        deviceRepository.invalidateVerifyCodes(deviceId);
+        verifyCodeService.deleteByDeviceId(deviceId);
 
         return deviceConvert.toResp(device, selectedRole.getRoleName());
     }
@@ -186,10 +189,8 @@ public class DeviceAppService {
 
         RoleBO role = null;
         if (req.getRoleId() != null) {
-            role = roleService.getBO(req.getRoleId());
-            if (role == null) throw new IllegalArgumentException("角色不存在或无权访问");
-            if (!Objects.equals(role.getUserId(), device.getUserId()))
-                throw new IllegalArgumentException("角色不属于设备所属用户");
+            role = requireRole(req.getRoleId());
+            requireSameOwner(role, device);
         }
 
         device.update(req.getDeviceName(), req.getRoleId(), req.getLocation());
@@ -214,33 +215,44 @@ public class DeviceAppService {
         if (!StringUtils.hasText(req.getDeviceIds()) || req.getRoleId() == null) {
             throw new IllegalArgumentException("更新失败，请检查设备ID是否正确");
         }
-        if (roleService.getBO(req.getRoleId()) == null) {
-            throw new IllegalArgumentException("角色不存在或无权访问");
-        }
+        RoleBO role = requireRole(req.getRoleId());
 
-        int successCount = 0;
         int totalCount = 0;
-        for (String rawDeviceId : Arrays.asList(req.getDeviceIds().split(","))) {
+        // 设备不存在时不能算进成功数，否则前端提示的成功条数比实际改动的多
+        List<Device> devices = new ArrayList<>();
+        for (String rawDeviceId : req.getDeviceIds().split(",")) {
             String deviceId = rawDeviceId.trim();
             if (!StringUtils.hasText(deviceId)) {
                 continue;
             }
             totalCount++;
-            // 设备不存在时不能算进成功数，否则前端提示的成功条数比实际改动的多
-            boolean updated = deviceRepository.findById(deviceId).map(device -> {
-                device.bindRole(req.getRoleId());
-                deviceRepository.save(device);
-                return true;
-            }).orElse(false);
-            if (updated) {
-                successCount++;
-            }
+            deviceRepository.findById(deviceId).ifPresent(devices::add);
         }
-        if (successCount <= 0) {
+        if (devices.isEmpty()) {
             throw new IllegalArgumentException("更新失败，请检查设备ID是否正确");
         }
+        // 先全部校验再落库，有一台不合规整批不改
+        devices.forEach(device -> requireSameOwner(role, device));
+        for (Device device : devices) {
+            device.bindRole(role.getRoleId());
+            deviceRepository.save(device);
+        }
+        return new DeviceBatchUpdateResp(devices.size(), totalCount);
+    }
 
-        return new DeviceBatchUpdateResp(successCount, totalCount);
+    private RoleBO requireRole(Integer roleId) {
+        RoleBO role = roleService.getBO(roleId);
+        if (role == null) {
+            throw new IllegalArgumentException("角色不存在或无权访问");
+        }
+        return role;
+    }
+
+    /** 设备只能绑它所属用户的角色：管理员越得过接口上的归属校验，这条不能跟着放开 */
+    private static void requireSameOwner(RoleBO role, Device device) {
+        if (!Objects.equals(role.getUserId(), device.getUserId())) {
+            throw new IllegalArgumentException("角色不属于设备所属用户");
+        }
     }
 
     public DeviceResp generateCode(String deviceId, String sessionId, String type) {
@@ -269,7 +281,7 @@ public class DeviceAppService {
         deviceRepository.delete(deviceId);
         // 设备本身删完后，其他聚合根挂在这个 deviceId 下的数据不会被自动清理，
         // 不主动清的话历史消息、验证码、记忆摘要都会变成永久孤儿
-        deviceRepository.invalidateVerifyCodes(deviceId);
+        verifyCodeService.deleteByDeviceId(deviceId);
         messageService.deleteByDeviceId(deviceId);
         summaryService.deleteByDeviceId(deviceId);
     }
@@ -310,6 +322,7 @@ public class DeviceAppService {
             "timezone_offset", DateUtils.offset().getTotalSeconds() / 60
         ));
 
+        // selectServer 返回 null 只表示注册表里没有对话实例（还没有按容量准入），此时按配置的对话端口下发
         DialogueServerInfo selectedServer = null;
         try {
             selectedServer = dialogueServerRegistry.selectServer();

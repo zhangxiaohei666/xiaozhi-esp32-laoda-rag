@@ -1,6 +1,5 @@
 package com.xiaozhi.communication.common;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.common.monitoring.CountingRejectionHandler;
@@ -13,7 +12,11 @@ import com.xiaozhi.ai.stt.SttServiceFactory;
 import com.xiaozhi.common.port.ProviderTokenClient;
 import com.xiaozhi.ai.tts.TtsServiceFactory;
 import com.xiaozhi.common.model.bo.ConfigBO;
+import com.xiaozhi.common.model.bo.ConfigChangeBO;
+import com.xiaozhi.common.model.bo.MemoryScopeBO;
+import com.xiaozhi.common.model.bo.SessionCloseBO;
 import com.xiaozhi.storage.service.StorageServiceFactory;
+import com.xiaozhi.agent.AgentProviders;
 import com.xiaozhi.config.service.ConfigService;
 import com.xiaozhi.role.service.RoleService;
 import com.xiaozhi.device.service.DeviceService;
@@ -34,8 +37,7 @@ import org.springframework.data.redis.listener.adapter.MessageListenerAdapter;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ThreadPoolExecutor;
 
 import lombok.extern.slf4j.Slf4j;
@@ -140,6 +142,7 @@ public class RedisSubscriber {
         addListener(container, "onCloseSession", RedisBroadcast.CHANNEL_CLOSE_SESSION);
         addListener(container, "onRoleUpdated", RedisBroadcast.CHANNEL_ROLE_UPDATED);
         addListener(container, "onDeviceUpdated", RedisBroadcast.CHANNEL_DEVICE_UPDATED);
+        addListener(container, "onMemoryDeleted", RedisBroadcast.CHANNEL_MEMORY_DELETED);
 
         return container;
     }
@@ -174,7 +177,7 @@ public class RedisSubscriber {
                 RoleBO role = roleService.getBO(freshDevice.getRoleId());
                 if (role != null) {
                     session.setInactiveTimeoutSeconds(role.getInactiveTimeoutSeconds() != null
-                            ? role.getInactiveTimeoutSeconds() : 60);
+                            ? role.getInactiveTimeoutSeconds() : RoleBO.DEFAULT_INACTIVE_TIMEOUT_SECONDS);
                 }
             }
             Persona persona = session.getPersona();
@@ -201,7 +204,7 @@ public class RedisSubscriber {
                 if (device != null && roleId.equals(device.getRoleId())) {
                     if (updatedRole != null) {
                         session.setInactiveTimeoutSeconds(updatedRole.getInactiveTimeoutSeconds() != null
-                                ? updatedRole.getInactiveTimeoutSeconds() : 60);
+                                ? updatedRole.getInactiveTimeoutSeconds() : RoleBO.DEFAULT_INACTIVE_TIMEOUT_SECONDS);
                     }
                     Persona persona = session.getPersona();
                     if (persona != null) {
@@ -226,24 +229,36 @@ public class RedisSubscriber {
      * 幽灵会话清理广播，此时本地还查不到设备；若时序不巧晚到，得靠这个字段而不是查询时序来避免误关新连接
      */
     public void onCloseSession(String message) {
-        String deviceId = message;
-        String excludeSessionId = null;
-        try {
-            Map<String, Object> payload = JsonUtil.fromJson(message, new TypeReference<>() {});
-            if (payload != null && payload.containsKey("deviceId")) {
-                deviceId = (String) payload.get("deviceId");
-                excludeSessionId = (String) payload.get("excludeSessionId");
-            }
-        } catch (Exception e) {
-            // 兼容旧格式：payload 直接就是 deviceId 字符串
-        }
-        if (deviceId == null) {
+        SessionCloseBO payload = JsonUtil.fromJson(message, SessionCloseBO.class);
+        if (payload == null || payload.deviceId() == null) {
             return;
         }
-        ChatSession session = sessionManager.getSessionByDeviceId(deviceId);
-        if (session != null && !session.getSessionId().equals(excludeSessionId)) {
+        ChatSession session = sessionManager.getSessionByDeviceId(payload.deviceId());
+        if (session != null && !session.getSessionId().equals(payload.excludeSessionId())) {
             sessionManager.closeSession(session);
-            log.info("已关闭设备会话（来自跨实例广播） - deviceId: {}", deviceId);
+            log.info("已关闭设备会话（来自跨实例广播） - deviceId: {}", payload.deviceId());
+        }
+    }
+
+    /**
+     * 摘要删了：该设备正在用这个角色的话，丢掉会话手里的记忆快照，下一轮从库里重建。
+     * 用 discard 不用 flush：flush 会把带着已删内容的上下文再压成摘要写回去
+     */
+    public void onMemoryDeleted(String message) {
+        MemoryScopeBO scope = JsonUtil.fromJson(message, MemoryScopeBO.class);
+        if (scope == null || scope.ownerId() == null) {
+            return;
+        }
+        ChatSession session = sessionManager.getSessionByDeviceId(scope.ownerId());
+        DeviceBO device = session == null ? null : session.getDevice();
+        if (device == null || !Objects.equals(device.getRoleId(), scope.roleId())) {
+            return;
+        }
+        Persona persona = session.getPersona();
+        if (persona != null) {
+            persona.getConversation().discard();
+            session.setPersona(null);
+            log.info("记忆已删，丢弃在线会话的记忆快照 - deviceId: {}, roleId: {}", scope.ownerId(), scope.roleId());
         }
     }
 
@@ -267,9 +282,12 @@ public class RedisSubscriber {
      */
     public void onConfigChanged(String message) {
         try {
-            Map<String, Object> payload = JsonUtil.fromJson(message, new TypeReference<>() {});
-            String configType = (String) payload.get("configType");
-            Integer configId = (Integer) payload.get("configId");
+            ConfigChangeBO payload = JsonUtil.fromJson(message, ConfigChangeBO.class);
+            if (payload == null) {
+                return;
+            }
+            String configType = payload.configType();
+            Integer configId = payload.configId();
 
             // OSS 默认配置切换：清空存储工厂缓存，下次按最新配置重建（不依赖 configId 对应记录是否存在）
             if ("oss".equals(configType)) {
@@ -281,15 +299,21 @@ public class RedisSubscriber {
             ConfigBO config = configService.getBO(configId);
             if (config != null) {
                 if ("stt".equals(configType)) {
-                    sttServiceFactory.removeCache(config);
+                    sttServiceFactory.removeCache(configId);
                 } else if ("tts".equals(configType)) {
-                    ttsServiceFactory.removeCache(config);
+                    ttsServiceFactory.removeCache(configId);
                 } else if ("llm".equals(configType)) {
                     personaFactory.clearPersonasByModelId(configId);
                     chatModelFactory.removeCache(configId);
+                } else if (AgentProviders.CREDENTIAL_CONFIG_TYPE.equals(configType)) {
+                    // 平台凭据变了，挂在它下面的智能体按各自的模型配置清
+                    for (ConfigBO model : configService.listAgentModels(config)) {
+                        personaFactory.clearPersonasByModelId(model.getConfigId());
+                        chatModelFactory.removeCache(model.getConfigId());
+                    }
                 }
                 // Token 缓存（Coze OAuth、阿里云 Token 等）与 configType 无关，统一清除
-                tokenClient.removeCache(config);
+                tokenClient.removeCache(configId);
                 log.info("已清除工厂缓存 - configType: {}, configId: {}", configType, configId);
             }
         } catch (Exception e) {

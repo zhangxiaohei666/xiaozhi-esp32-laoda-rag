@@ -3,9 +3,11 @@ package com.xiaozhi.summary.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaozhi.common.model.bo.SummaryBO;
+import com.xiaozhi.event.MemoryDeletedEvent;
 import com.xiaozhi.summary.convert.SummaryConvert;
 import com.xiaozhi.summary.dal.mysql.dataobject.SummaryDO;
 import com.xiaozhi.summary.dal.mysql.mapper.SummaryMapper;
+import com.xiaozhi.summary.model.SummaryProjection;
 import com.xiaozhi.support.MybatisPlusTestHelper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.time.Instant;
@@ -47,17 +50,23 @@ class SummaryServiceImplTest {
     @Mock
     private SummaryConvert summaryConvert;
 
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
+
     @InjectMocks
     private SummaryServiceImpl summaryService;
 
-    // 分页由 XML 的 JOIN 直出 BO（含设备名、角色名），Service 只透传条件与分页参数
+    // 分页由 XML 的 JOIN 出结果集（含设备名、角色名），时间列必须经转换器按应用时区换成时刻：
+    // 让驱动直接读成 Instant 会按连接串里的时区换算，应用不在那个时区时列表里的 id 整体偏移，删除按 id 反查就对不上
     @Test
-    void pagePassesScopeThroughAndReturnsRowsAsIs() {
+    void pagePassesScopeThroughAndConvertsRowsThroughTheConverter() {
+        SummaryProjection row = new SummaryProjection();
         SummaryBO summaryBO = new SummaryBO();
-        Page<SummaryBO> page = new Page<>(2, 5);
-        page.setRecords(List.of(summaryBO));
+        Page<SummaryProjection> page = new Page<>(2, 5);
+        page.setRecords(List.of(row));
         page.setTotal(7);
         when(summaryMapper.selectPage(any(Page.class), eq("device-1"), eq(9), eq(1))).thenReturn(page);
+        when(summaryConvert.toBO(row)).thenReturn(summaryBO);
 
         var result = summaryService.page("device-1", 9, 1, 2, 5);
 
@@ -65,7 +74,6 @@ class SummaryServiceImplTest {
         assertThat(result.getTotal()).isEqualTo(7);
         assertThat(result.getPageNo()).isEqualTo(2);
         assertThat(result.getPageSize()).isEqualTo(5);
-        verifyNoInteractions(summaryConvert);
     }
 
     @Test
@@ -164,6 +172,28 @@ class SummaryServiceImplTest {
         verify(summaryMapper).delete(captor.capture());
         assertThat(captor.getValue().getTargetSql()).doesNotContain("createTime");
         assertThat(captor.getValue().getParamNameValuePairs().values()).containsExactlyInAnyOrder(1, "device-1");
+    }
+
+    /** 在线会话开会话时装进提示词的摘要是快照：删了要发事件，让对话侧丢掉重建 */
+    @Test
+    void deletingSummariesTellsTheLiveSessions() {
+        when(summaryMapper.delete(any(LambdaQueryWrapper.class))).thenReturn(2);
+
+        summaryService.delete(1, "device-1", null);
+
+        ArgumentCaptor<MemoryDeletedEvent> event = ArgumentCaptor.forClass(MemoryDeletedEvent.class);
+        verify(eventPublisher).publishEvent(event.capture());
+        assertThat(event.getValue().getOwnerId()).isEqualTo("device-1");
+        assertThat(event.getValue().getRoleId()).isEqualTo(1);
+    }
+
+    @Test
+    void nothingDeletedNothingToTell() {
+        when(summaryMapper.delete(any(LambdaQueryWrapper.class))).thenReturn(0);
+
+        summaryService.delete(1, "device-1", null);
+
+        verifyNoInteractions(eventPublisher);
     }
 
     @Test

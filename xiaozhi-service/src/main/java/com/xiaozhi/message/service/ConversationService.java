@@ -16,15 +16,24 @@ public interface ConversationService {
 
     ConversationBO get(String sessionId);
 
+    /**
+     * 会话归属的唯一判定：不存在抛 ResourceNotFoundException，不归属 userId 抛 UnauthorizedException。
+     * 网页聊天是个人会话，管理员也不放行：续接别人的会话等于替别人说话。
+     */
+    void checkAccess(String sessionId, Integer userId);
+
     /** 会话第一轮对话时建档，标题取这句话的开头；已经建过则不动 */
     void create(String sessionId, Integer userId, Integer roleId, String firstMessage);
 
     /** 刷新最后对话时间 */
     void touch(String sessionId);
 
-    /** 只改当前用户名下的会话，不存在或不归属时抛 ResourceNotFoundException */
+    /** 归属按 {@link #checkAccess} 判定 */
     void rename(Integer userId, String sessionId, String title);
 
     /** 删除当前用户名下的这些会话及其聊天记录与摘要，不归属的跳过，返回实际删掉的会话 ID */
     List<String> delete(Integer userId, Collection<String> sessionIds);
+
+    /** 删除这个角色的全部会话及其聊天记录与摘要，返回删掉的会话 ID；设备消息不在会话表里，不受影响 */
+    List<String> deleteByRole(Integer roleId);
 }

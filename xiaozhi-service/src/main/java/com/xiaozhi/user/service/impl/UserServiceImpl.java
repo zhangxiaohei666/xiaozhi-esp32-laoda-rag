@@ -1,5 +1,7 @@
 package com.xiaozhi.user.service.impl;
 
+import com.xiaozhi.utils.DateUtils;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -14,9 +16,12 @@ import com.xiaozhi.user.dal.mysql.dataobject.UserDO;
 import com.xiaozhi.user.dal.mysql.mapper.UserMapper;
 import com.xiaozhi.user.model.UserProjection;
 import com.xiaozhi.user.service.UserService;
+import com.xiaozhi.user.support.UserCacheKeys;
 import jakarta.annotation.Resource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -35,6 +40,11 @@ public class UserServiceImpl implements UserService {
     @Resource
     private CacheManager cacheManager;
 
+    // 自注入以走 getBO 的缓存：Sa-Token 每次权限判定都要问一次是不是管理员
+    @Lazy
+    @Autowired
+    private UserService self;
+
     @Override
     public PageResult<UserProjection> page(int pageNo, int pageSize, String name, String email,
                                            String tel, String isAdmin, Integer authRoleId) {
@@ -49,13 +59,22 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    @Cacheable(value = CacheNames.USER, key = "'bo:' + #userId", condition = "#userId != null",
+    @Cacheable(value = CacheNames.USER, key = "T(com.xiaozhi.user.support.UserCacheKeys).of(#userId)", condition = "#userId != null",
         unless = "#result == null")
     public UserBO getBO(Integer userId) {
         if (userId == null) {
             return null;
         }
         return userConvert.toBO(userMapper.selectById(userId));
+    }
+
+    @Override
+    public boolean isAdmin(Integer userId) {
+        if (userId == null) {
+            return false;
+        }
+        UserBO user = self.getBO(userId);
+        return user != null && UserBO.ADMIN_YES.equals(user.getIsAdmin());
     }
 
     @Override
@@ -163,10 +182,19 @@ public class UserServiceImpl implements UserService {
         }
         // 不用 @CacheEvict：缓存是事务感知的，注解那次淘汰要等提交后才生效，
         // 同一个事务里写完紧接着 getBO 会读到旧值，接口返回给前端的就是改动前的资料
-        CacheHelper.evictNow(cacheManager.getCache(CacheNames.USER), "bo:" + user.getUserId());
+        CacheHelper.evictNow(cacheManager.getCache(CacheNames.USER), UserCacheKeys.of(user.getUserId()));
         // existing 是「库里那行 + 本次改动」，updateTime 也已由自动填充写回，
         // 直接转成 BO 返回，调用方拿完整资料不必再查一次用户表
         return userConvert.toBO(existing);
+    }
+
+    @Override
+    public void recordLogin(Integer userId, String loginIp) {
+        userMapper.update(null, new LambdaUpdateWrapper<UserDO>()
+            .set(UserDO::getLoginTime, DateUtils.now())
+            .set(UserDO::getLoginIp, loginIp)
+            .eq(UserDO::getUserId, userId));
+        CacheHelper.evictNow(cacheManager.getCache(CacheNames.USER), UserCacheKeys.of(userId));
     }
 
     @Override

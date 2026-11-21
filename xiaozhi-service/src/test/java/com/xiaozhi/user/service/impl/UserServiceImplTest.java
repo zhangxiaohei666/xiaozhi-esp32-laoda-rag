@@ -1,5 +1,7 @@
 package com.xiaozhi.user.service.impl;
 
+import org.mockito.ArgumentCaptor;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UnauthorizedException;
@@ -10,6 +12,7 @@ import com.xiaozhi.user.convert.UserConvert;
 import com.xiaozhi.user.dal.mysql.dataobject.UserDO;
 import com.xiaozhi.user.dal.mysql.mapper.UserMapper;
 import com.xiaozhi.user.model.UserProjection;
+import com.xiaozhi.user.service.UserService;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,9 +20,12 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.cache.CacheManager;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -165,6 +171,22 @@ class UserServiceImplTest {
     }
 
     @Test
+    void recordLoginWritesOnlyTheLoginColumns() {
+        userService.recordLogin(10, "10.0.0.7");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaUpdateWrapper<UserDO>> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(userMapper).update(isNull(), update.capture());
+        // 登录时读到的资料可能已过时，别的列一个都不能带：管理端刚做的禁用、改密会被盖回去
+        assertThat(update.getValue().getSqlSet().split(","))
+            .extracting(assignment -> assignment.substring(0, assignment.indexOf('=')))
+            .containsExactlyInAnyOrder("loginTime", "loginIp");
+        assertThat(update.getValue().getSqlSegment()).contains("userId");
+        assertThat(update.getValue().getParamNameValuePairs().values()).contains("10.0.0.7", 10);
+        verify(userMapper, never()).updateById(any(UserDO.class));
+    }
+
+    @Test
     void requireEnabledRejectsDisabledUserOnly() {
         UserBO disabled = new UserBO();
         disabled.setState(UserBO.STATE_DISABLED);
@@ -178,4 +200,23 @@ class UserServiceImplTest {
         userService.requireEnabled(enabled);
         userService.requireEnabled(null);
     }
+
+    /** 管理员只认 sys_user.isAdmin，与 userId 是几无关 */
+    @Test
+    void isAdminReadsTheIsAdminColumnThroughTheCachedLookup() {
+        UserService self = mock(UserService.class);
+        ReflectionTestUtils.setField(userService, "self", self);
+        UserBO admin = new UserBO();
+        admin.setIsAdmin(UserBO.ADMIN_YES);
+        UserBO plain = new UserBO();
+        plain.setIsAdmin("0");
+        when(self.getBO(5)).thenReturn(admin);
+        when(self.getBO(1)).thenReturn(plain);
+
+        assertThat(userService.isAdmin(5)).isTrue();
+        assertThat(userService.isAdmin(1)).isFalse();
+        assertThat(userService.isAdmin(9)).isFalse();
+        assertThat(userService.isAdmin(null)).isFalse();
+    }
+
 }

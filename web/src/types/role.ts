@@ -100,7 +100,7 @@ export interface RoleFormData {
   vadSilenceTh?: number
   vadEnergyTh?: number
   vadSilenceMs?: number
-  inactiveTimeoutSeconds: number
+  inactiveTimeoutSeconds?: number
   // 语音合成相关
   voiceName?: string
   ttsId?: number
@@ -121,4 +121,19 @@ export interface TestVoiceParams {
 
 export interface TestVoiceResult {
   audioUrl: string
+}
+
+/**
+ * 角色参数默认值，真源是后端 RoleBO（经 GET /api/role/defaults 下发），前端不自带第二份
+ */
+export interface RoleDefaults {
+  temperature: number
+  topP: number
+  vadSpeechTh: number
+  vadSilenceTh: number
+  vadEnergyTh: number
+  vadSilenceMs: number
+  inactiveTimeoutSeconds?: number
+  ttsPitch: number
+  ttsSpeed: number
 }

@@ -4,7 +4,6 @@ import com.xiaozhi.authrole.convert.AuthRoleConvert;
 import com.xiaozhi.authrole.service.AuthRoleService;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UserPasswordNotMatchException;
-import com.xiaozhi.common.exception.UsernameNotFoundException;
 import com.xiaozhi.common.model.bo.UserAuthBO;
 import com.xiaozhi.common.model.bo.UserBO;
 import com.xiaozhi.common.model.req.UserPageReq;
@@ -16,7 +15,6 @@ import com.xiaozhi.common.model.resp.LoginResp;
 import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.model.resp.PermissionTreeResp;
 import com.xiaozhi.common.model.resp.UserResp;
-import com.xiaozhi.common.port.DeviceWriter;
 import com.xiaozhi.device.service.DeviceService;
 import com.xiaozhi.permission.convert.PermissionConvert;
 import com.xiaozhi.permission.service.PermissionService;
@@ -50,7 +48,13 @@ import java.util.UUID;
 @Service
 public class UserAppService {
 
-    private static final Integer ADMIN_TEMPLATE_OWNER_ID = 1;
+    /** 新用户的默认角色与模板从这个用户名下复制，即 V1 初始化的那个管理员；只是种子来源，判定管理员走 UserService.isAdmin */
+    private static final Integer SEED_OWNER_USER_ID = 1;
+
+    private static final String LOGIN_FAILED = "账号或密码错误";
+
+    /** 账号不存在时拿它跑一次密码校验，让两种失败的耗时对齐；首次用时生成 */
+    private volatile String dummyPasswordHash;
     private static final String PLATFORM_WECHAT = "wechat";
     private static final int TOKEN_EXPIRE_SECONDS = 2592000;
 
@@ -69,8 +73,6 @@ public class UserAppService {
     @Resource
     private DeviceService deviceService;
 
-    @Resource
-    private DeviceWriter deviceWriter;
 
     @Resource
     private AuthenticationService authenticationService;
@@ -133,9 +135,9 @@ public class UserAppService {
         UserBO created = userService.create(user);
         Integer userId = created.getUserId();
 
-        Integer defaultRoleId = roleService.copyDefaultRole(ADMIN_TEMPLATE_OWNER_ID, userId);
-        templateService.copyTemplates(ADMIN_TEMPLATE_OWNER_ID, userId);
-        deviceWriter.register("user_chat_" + userId, "网页聊天", "web", userId, defaultRoleId);
+        Integer defaultRoleId = roleService.copyDefaultRole(SEED_OWNER_USER_ID, userId);
+        templateService.copyTemplates(SEED_OWNER_USER_ID, userId);
+        deviceService.registerWebChat(userId, defaultRoleId);
 
         return created;
     }
@@ -155,7 +157,7 @@ public class UserAppService {
             // 改密码必须先证明知道原密码：登录态被短暂窃取时，这是账号被接管前的最后一道关
             if (!StringUtils.hasText(req.getOldPassword())
                     || !authenticationService.isPasswordValid(req.getOldPassword(), storedPassword)) {
-                throw new UserPasswordNotMatchException();
+                throw new UserPasswordNotMatchException("原密码不正确");
             }
             existing.setPassword(authenticationService.encryptPassword(req.getPassword()));
         }
@@ -171,8 +173,9 @@ public class UserAppService {
             throw new IllegalArgumentException("验证码错误或已过期");
         }
         UserBO user = userService.getByEmail(req.getEmail());
+        // 不暴露账号是否存在：没有这个账号就当验证码不对
         if (user == null) {
-            throw new IllegalArgumentException("该邮箱未注册");
+            throw new IllegalArgumentException("验证码错误或已过期");
         }
 
         UserBO updateUser = new UserBO();
@@ -183,6 +186,10 @@ public class UserAppService {
 
     // ==================== 登录 ====================
 
+    /**
+     * 登录口不暴露账号是否存在：账号不存在与密码不对说同一句话，不存在时也拿一份假密文跑一次校验，
+     * 耗时差不多；账号被禁用只告诉拿对了密码的人
+     */
     public UserBO login(String username, String password) {
         UserBO user = userService.getByUsername(username);
         if (user == null) {
@@ -191,14 +198,22 @@ public class UserAppService {
         if (user == null) {
             user = userService.getByTel(username);
         }
-        if (user == null) {
-            throw new UsernameNotFoundException();
+        boolean passwordMatches = Boolean.TRUE.equals(
+                authenticationService.isPasswordValid(password, user != null ? user.getPassword() : dummyPasswordHash()));
+        if (user == null || !passwordMatches) {
+            throw new UserPasswordNotMatchException(LOGIN_FAILED);
         }
         userService.requireEnabled(user);
-        if (!authenticationService.isPasswordValid(password, user.getPassword())) {
-            throw new UserPasswordNotMatchException();
-        }
         return user;
+    }
+
+    private String dummyPasswordHash() {
+        String hash = dummyPasswordHash;
+        if (hash == null) {
+            hash = authenticationService.encryptPassword(UUID.randomUUID().toString());
+            dummyPasswordHash = hash;
+        }
+        return hash;
     }
 
     /**
@@ -286,10 +301,8 @@ public class UserAppService {
         return userConvert.toResp(userService.update(update));
     }
 
-    public void recordLoginInfo(UserBO user, String loginIp) {
-        user.setLoginTime(DateUtils.now());
-        user.setLoginIp(loginIp);
-        userService.update(user);
+    public void recordLoginInfo(Integer userId, String loginIp) {
+        userService.recordLogin(userId, loginIp);
     }
 
     public LoginResp buildLoginResp(Integer userId, String token, boolean isNewUser) {

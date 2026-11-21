@@ -1,9 +1,9 @@
 package com.xiaozhi.role;
 
+import com.xiaozhi.common.model.resp.RoleDefaultsResp;
 import com.xiaozhi.server.web.BaseController;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
-import cn.dev33.satoken.stp.StpUtil;
 import com.xiaozhi.common.annotation.AuditLog;
 import com.xiaozhi.common.annotation.CheckOwner;
 import com.xiaozhi.common.exception.OperationFailedException;
@@ -25,6 +25,7 @@ import com.xiaozhi.common.model.bo.ConfigBO;
 import com.xiaozhi.config.service.ConfigService;
 import com.xiaozhi.storage.service.StorageService;
 import com.xiaozhi.storage.service.StorageServiceFactory;
+import com.xiaozhi.security.CurrentUser;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -78,7 +79,15 @@ public class RoleController extends BaseController {
     @SaCheckPermission("system:role:api:list")
     @Operation(summary = "根据条件查询角色信息", description = "返回角色信息列表")
     public ApiResponse<PageResult<RoleResp>> list(@Valid RolePageReq req) {
-        return ApiResponse.success(roleAppService.page(req, StpUtil.getLoginIdAsInt()));
+        return ApiResponse.success(roleAppService.page(req, CurrentUser.id()));
+    }
+
+    @GetMapping("/defaults")
+    @ResponseBody
+    @SaCheckPermission("system:role:api:list")
+    @Operation(summary = "角色参数默认值", description = "新建表单展示用；没改过的参数不必提交，后端按同一份默认补齐")
+    public ApiResponse<RoleDefaultsResp> defaults() {
+        return ApiResponse.success(RoleDefaultsResp.current());
     }
 
     /**
@@ -115,7 +124,7 @@ public class RoleController extends BaseController {
     @CheckOwner(resource = "config", id = "#param.ttsId != null && #param.ttsId > 0 ? #param.ttsId : null")
     @Operation(summary = "添加角色信息", description = "添加新的语音助手角色")
     public ApiResponse<RoleResp> create(@Valid @RequestBody RoleCreateReq param) {
-        return ApiResponse.success(roleAppService.create(param, StpUtil.getLoginIdAsInt()));
+        return ApiResponse.success(roleAppService.create(param, CurrentUser.id()));
     }
 
     /**
