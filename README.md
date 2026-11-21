@@ -93,6 +93,8 @@
 | 雪峰老师 | cosyvoice-v3-flash 复刻 | [xuefeng-1.mp3](samples/xuefeng-1.mp3) |
 
 > 样本仅用于演示本项目的 TTS 链路，不含第三方媒体素材；如涉权益问题请联系删除。
+**想自己训练音色？** 见 [`samples/reference/`](samples/reference/README.md) —— 参考音频的处理配方（时长、去 BGM、采样率、GPT-SoVITS 参数）与清洗脚本 `prepare-reference.ps1`。
+两份材料都要求**自己的**音频；本仓库不提供任何他人声音素材。
 
 ---
 ## 与上游开源版的差异
