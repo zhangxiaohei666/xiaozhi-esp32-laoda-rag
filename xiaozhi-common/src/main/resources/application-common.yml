@@ -223,6 +223,44 @@ xiaozhi:
       # 只在读代码或排查入库问题时临时开启，平时保持 false 免得刷屏。
       debug-trace: ${KNOWLEDGE_DEBUG_TRACE:false}
 
+  # ------------------------------------------------------------
+  # 图书馆座位（token 来自侧车，Java 侧只查询/提交，不碰 CAS 登录）
+  #
+  # ⚠️ 为什么写在 common 而不是各自的 application.yml：
+  #   本段曾经只在 xiaozhi-server/application.yml 里，dialogue 进程取不到
+  #   xiaozhi.library.enabled，@ConditionalOnProperty 让两个工具 bean 根本不创建 ——
+  #   结果同一个问题「图书馆还有空位吗」在网页聊天答得出、在 ESP32 语音答不出，
+  #   而 dialogue 日志里连一条 library_ 调用都搜不到（2026-11-24 确认）。
+  #   更早的 2026-11-05 还反着漏过一次（dialogue 有、server 没有）。
+  #   同一份配置在多个进程各写一遍 = 迟早漏一处，所以统一放这里，两边 import 同一份。
+  #   各进程的 application.yml 不要再写 library 段。
+  # ------------------------------------------------------------
+  library:
+    # 总开关。false 时图书馆工具全部不注册，模型完全不知道有这功能。
+    # 验证时用环境变量 LIBRARY_ENABLED=true 打开，不要改这里的默认值。
+    enabled: ${LIBRARY_ENABLED:false}
+
+    # CAS 登录守护进程（只监听 127.0.0.1）。Java 侧只向它要 token，
+    # 登录的图形验证码 / 浏览器指纹全在侧车内部处理。
+    sidecar-url: ${LIBRARY_SIDECAR_URL:http://127.0.0.1:8790}
+
+    # 图书馆系统根地址。换学校/换域名只改这里。
+    base-url: ${LIBRARY_BASE_URL:https://zwyy.nyist.edu.cn}
+
+    # 单次 HTTP 超时。对话链路不能被拖住，所以给得比较短。
+    timeout-ms: ${LIBRARY_TIMEOUT_MS:5000}
+
+    # 向守护进程要 token 的超时。它在本机，应该很快。
+    token-timeout-ms: ${LIBRARY_TOKEN_TIMEOUT_MS:3000}
+
+    # 写操作（预约/签退）只允许这一个用户执行。
+    #
+    # ⚠️ 暂为占位值：等确认实际 userId 后再填。
+    #   预约是写操作，写错座位在图书馆系统里就是一次违约，
+    #   所以宁可先留一个不会命中的占位，也不要盲填。
+    #   0 = 未配置，此时写工具一律拒绝执行（见 LibraryWriteGuard）。
+    owner-user-id: ${LIBRARY_OWNER_USER_ID:0}
+
 # ============================================================
 # Sa-Token 认证框架配置（两边共用部分；jwt-secret-key 见各自 application.yml）
 # ============================================================
