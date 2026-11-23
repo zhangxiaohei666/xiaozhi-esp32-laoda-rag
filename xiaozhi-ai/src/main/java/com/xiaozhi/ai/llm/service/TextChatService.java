@@ -60,22 +60,6 @@ public class TextChatService {
     private ConversationFactory conversationFactory;
 
     /**
-     * RAG 检索服务。
-     *
-     * <p>注意：{@code @Resource} 没有 {@code required = false} 这个属性（那是 {@code @Autowired} 的）。
-     * 这里能注入是因为 {@code RetrievalService} 是无条件 {@code @Component}
-     * （QdrantRagService 也全是懒加载，未配 Qdrant 时不会在启动期报错）。
-     * 下面的 {@code != null} 判空只是为了单测（{@code @InjectMocks} 塞 null）能跑过，
-     * 生产环境恒真。
-     *
-     * <p>2026-11-06 修 F-19：原注释写成 {@code required = false} 会误导排查方向 ——
-     * 将来若真给 QdrantRagService 加 {@code @ConditionalOnProperty}，
-     * {@code @Resource} 会启动失败而不是优雅降级。
-     */
-    @Resource
-    private com.xiaozhi.ai.rag.RetrievalService retrievalService;
-
-    /**
      * 工具注册协调器。设备链路在 PersonaFactory 里用它把工具注册进会话的 ToolsSessionHolder；
      * 网页聊天没有设备会话，需要自己造一个"网页版 ToolSession"再走同一套注册流程，
      * 否则网页端永远调不到图书馆座位查询这类工具。
@@ -128,31 +112,21 @@ public class TextChatService {
         //    直接 add 会抛 UnsupportedOperationException。
         List<Message> messages = new ArrayList<>(conversation.messages(ConversationContext.EMPTY));
 
-        // ── RAG 注入 ──────────────────────────────────────────────────────────
-        // 与设备链路（Persona.chatStream）保持一致的三个要点：
-        //   ① 必须带 userId —— 检索只返回「本人的私有资料 + 所有人共享的资料」；
-        //      不带 userId 会退化成"只查共享"甚至"不过滤"（多用户串数据）。
-        //   ② 注入失败绝不能影响对话 —— 整段用 try-catch 兜住，失败就当没参考资料。
-        //   ③ 插在 messages[1]（系统提示词之后、历史之前），与 Persona 位置一致。
+        // ── RAG：已由固定注入改为工具自主调用（2026-11-23 S2）────────────────────
+        // 这里原来每轮无条件调用 retrievalService.buildInjection(...) 并把命中资料
+        // 插成 system 消息。该路径已删除，改由主 LLM 自主决定是否调用 knowledge_search：
         //
-        // 历史背景：网页聊天此前完全没有 RAG（TextChatService 里 search 不到任何 rag 字样），
-        // 同一个问题「图书馆几点开门」在 ESP32 上有答案、在网页里模型答"不知道"，
-        // 两个入口能力不一致。
-        try {
-            if (retrievalService != null) {
-                // UP-16 多轮指代：倒扫上一条用户问句。必须用 rawMessages()（裸文本快照）——
-                // messages() 返回的是拼了 [时间戳] 前缀的装配副本，拿来比对会全部对不上。
-                // "那周日呢"这类指代短句靠上轮问句在检索侧被改写补全（只改检索词，不改喂给模型的原句）。
-                String prevQuestion = com.xiaozhi.ai.rag.RagQueryRewrite
-                        .previousUserQuestion(conversation.rawMessages(), userText);
-                String injection = retrievalService.buildInjection(userText, conversation.getUserId(), prevQuestion);
-                if (injection != null && !injection.isBlank()) {
-                    messages.add(1, new SystemMessage(injection));
-                }
-            }
-        } catch (Exception ragError) {
-            log.warn("网页聊天 RAG 注入失败，本轮按无参考资料处理: {}", ragError.getMessage());
-        }
+        // 为什么必须删掉而不是"两者都开"：
+        //   V1 提前把资料塞进 prompt 后，模型没有理由再调工具 —— 实测 30 分钟内
+        //   V1 检索 49 次、knowledge_search 调用 0 次，正是这个抑制效应。
+        //   留着 V1 等于 Agentic 永远不生效，"减少不必要检索"也无从谈起。
+        //
+        // 身份与权限没有变化：工具内部同样按会话归属人过滤（user_id==我 OR scope==shared），
+        // 拿不到 userId 时 fail-closed 只查共享资料 —— 与 V1 的 buildInjection 同一口径。
+        //
+        // buildInjection 方法本身保留：/api/knowledge/search 调试通道与单测仍在用，
+        // 只是主对话链路不再调用它。
+
 
         // ── 工具注册（Function Calling）────────────────────────────────────────
         // 设备链路在 PersonaFactory 里做这件事：toolRegistrationService.register(设备会话)，

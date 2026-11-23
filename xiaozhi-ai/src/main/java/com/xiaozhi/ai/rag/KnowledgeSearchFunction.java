@@ -1,5 +1,6 @@
 package com.xiaozhi.ai.rag;
 
+import com.xiaozhi.ai.llm.tool.ToolCallStringResultConverter;
 import com.xiaozhi.ai.tool.ToolsGlobalRegistry;
 import com.xiaozhi.ai.tool.session.ToolSession;
 import lombok.extern.slf4j.Slf4j;
@@ -99,6 +100,11 @@ public class KnowledgeSearchFunction implements ToolsGlobalRegistry.GlobalFuncti
                             "required": ["query"]
                         }
                         """)
+                // ⚠️ 必须给 inputType，否则 builder.build() 抛 IllegalArgumentException: inputType cannot be null。
+                // 与 ChangeRoleFunction 同一写法：闭包式 builder 不会自动推断参数类型。
+                .inputType(Map.class)
+                // 结果转换器：工具返回的是纯文本，需要它把返回值转成 ToolResponse 编码（同 ChangeRoleFunction）
+                .toolCallResultConverter(ToolCallStringResultConverter.INSTANCE)
                 .build();
     }
 

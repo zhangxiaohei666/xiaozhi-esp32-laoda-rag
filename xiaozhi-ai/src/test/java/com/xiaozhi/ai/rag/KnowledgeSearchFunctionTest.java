@@ -162,4 +162,35 @@ class KnowledgeSearchFunctionTest {
         assertThat(fn.getToolName()).isEqualTo("knowledge_search");
         assertThat(fn.getToolDescription()).contains("知识库");
     }
+
+    @Test
+    @DisplayName("getFunctionCallTool 能真的构造出 ToolCallback（2026-11-23 回归：曾因缺 inputType 抛异常）")
+    void registryBuildsToolCallback() {
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(mock(RetrievalService.class));
+        com.xiaozhi.ai.tool.session.ToolSession session =
+                mock(com.xiaozhi.ai.tool.session.ToolSession.class);
+        when(session.getUserId()).thenReturn(2);
+
+        // 这条断言的价值：S0 的单测只测了 execute()，没测注册期的 builder.build()，
+        // 导致「inputType cannot be null」这个错误一路漏到运行期
+        // （SystemToolRegistrar 整批注册失败 → 模型完全看不到 knowledge_search）。
+        var callback = fn.getFunctionCallTool(session);
+
+        assertThat(callback).as("注册必须返回非 null 的 ToolCallback").isNotNull();
+        assertThat(callback.getToolDefinition().name()).isEqualTo("knowledge_search");
+        assertThat(callback.getToolDefinition().description()).contains("知识库");
+    }
+
+    @Test
+    @DisplayName("userId 为 null 时工具仍可注册（fail-closed 由检索层兜底，不该导致注册失败）")
+    void registryToleratesNullUserId() {
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(mock(RetrievalService.class));
+        com.xiaozhi.ai.tool.session.ToolSession session =
+                mock(com.xiaozhi.ai.tool.session.ToolSession.class);
+        when(session.getUserId()).thenReturn(null);
+
+        var callback = fn.getFunctionCallTool(session);
+
+        assertThat(callback).as("拿不到 userId 时工具仍应注册，检索侧按只查共享处理").isNotNull();
+    }
 }
