@@ -220,6 +220,53 @@ public class RetrievalService {
         return rerankModel;
     }
 
+    /**
+     * 工具化检索入口（S0，Agentic 路径专用）：供 {@link KnowledgeSearchFunction} 调用。
+     *
+     * <p>与 {@link #search(String, Integer)} 的差异只有一处：<b>跳过寒暄门控</b>——
+     * 工具路径里"要不要检索"已由主 LLM 决策（它决定调用就是它判断这个问题需要查），
+     * 代码侧再判一次寒暄是重复决策；而权限过滤下推、查询缓存、两段式 rerank、
+     * 每文档限额<b>全部保留</b>，与注入链路同一套口径。
+     *
+     * <p>设计红线（继承自本类）：任何异常不抛给调用方，失败按"没查到"返回空列表。
+     *
+     * @param query  主 LLM 生成的自包含检索词（不依赖上下文）
+     * @param userId 当前会话归属人；null 时只查共享资料（fail-closed）
+     * @return 命中文档（含分数与 metadata），失败返回空列表
+     */
+    public List<Document> searchRaw(String query, Integer userId) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        if (!ragService.isEnabled()) {
+            return List.of();
+        }
+        // 缓存与 doSearch 的组合逻辑与 search 一致，这里抽公共路径避免两份拷贝漂移
+        String cacheKey = cacheKey(query, userId);
+        if (cacheKey != null) {
+            try {
+                String cached = stringRedisTemplate.opsForValue().get(cacheKey);
+                if (cached != null) {
+                    List<Document> hits = fromCacheJson(cached);
+                    if (!hits.isEmpty()) {
+                        return hits;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("RAG 缓存读取失败（工具路径），直查向量库: {}", brief(e));
+            }
+        }
+        List<Document> documents = doSearch(query, userId);
+        if (!documents.isEmpty() && cacheKey != null) {
+            try {
+                stringRedisTemplate.opsForValue().set(cacheKey, toCacheJson(documents), CACHE_TTL);
+            } catch (Exception e) {
+                log.warn("RAG 缓存写入失败（工具路径），不影响本轮: {}", brief(e));
+            }
+        }
+        return documents;
+    }
+
     public int getRerankRecallK() {
         return rerankRecallK;
     }

@@ -318,7 +318,7 @@ public class TextChatService {
 
         // DeviceBO 传 null：ToolsSessionHolder 只是把它存起来，没有任何方法读
         ToolsSessionHolder holder = new ToolsSessionHolder(sessionId, null, toolsGlobalRegistry);
-        ToolSession webChatSession = new WebChatToolSession(sessionId, roleId, holder);
+        ToolSession webChatSession = new WebChatToolSession(sessionId, roleId, holder, conversation.getUserId());
 
         toolRegistrationService.register(webChatSession);
         return holder.getAllFunction();
@@ -341,11 +341,13 @@ public class TextChatService {
         private final String sessionId;
         private final Integer roleId;
         private final ToolsSessionHolder holder;
+        private final Integer userId;
 
-        private WebChatToolSession(String sessionId, Integer roleId, ToolsSessionHolder holder) {
+        private WebChatToolSession(String sessionId, Integer roleId, ToolsSessionHolder holder, Integer userId) {
             this.sessionId = sessionId;
             this.roleId = roleId;
             this.holder = holder;
+            this.userId = userId;
         }
 
         @Override
@@ -362,6 +364,12 @@ public class TextChatService {
         public String getDeviceId() {
             // 网页聊天没有设备。依赖设备身份的工具会因此自动跳过
             return null;
+        }
+
+        @Override
+        public Integer getUserId() {
+            // Web 链路：用户身份 = 会话归属人（S0 新增，knowledge_search 等按用户过滤的工具用）
+            return userId;
         }
 
         @Override

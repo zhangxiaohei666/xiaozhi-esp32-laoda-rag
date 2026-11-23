@@ -36,6 +36,12 @@ public class ChatSessionToolAdapter implements ToolSession {
     }
 
     @Override
+    public Integer getUserId() {
+        // 语音链路：用户身份 = 设备归属人。绝不能从前端参数取（防伪造）
+        return chatSession.getDevice() != null ? chatSession.getDevice().getUserId() : null;
+    }
+
+    @Override
     public ToolsSessionHolder getToolsSessionHolder() {
         return chatSession.getToolsSessionHolder();
     }
