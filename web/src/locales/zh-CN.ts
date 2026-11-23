@@ -950,6 +950,7 @@ export default {
         keyword: '关键词',
         keywordPlaceholder: '标题或文件名',
         columnTitle: '标题',
+        columnOwner: '归属人',
         charCountLabel: '字数',
         chunkCountLabel: '分块数',
         sourceUrl: '原文链接',

@@ -98,7 +98,7 @@
         :pagination="pagination"
         :scroll="{ x: 1100 }"
         row-key="id"
-        @change="handleTableChange"
+        @change="onTableChange"
       >
         <template #emptyText>
           <TableEmptyState :error="loadError" @retry="retryLoad" />
@@ -142,6 +142,7 @@
                 {{ t('common.detail') }}
               </a-button>
               <a-popconfirm
+                v-if="canDelete(record)"
                 :title="t('knowledge.deleteConfirm')"
                 :ok-text="t('common.confirm')"
                 :cancel-text="t('common.cancel')"
@@ -284,8 +285,16 @@ import {
 import { useTable } from '@/composables/useTable'
 import TableEmptyState from '@/components/TableEmptyState.vue'
 import { fileValidators } from '@/utils/fileValidators'
+import { useUserStore } from '@/store/user'
 
 const { t } = useI18n()
+const userStore = useUserStore()
+
+/** 删除按钮只对「本人上传」或「管理员」显示；普通用户看到别人的共享文档时不能出现删除按钮。 */
+function canDelete(record: KnowledgeDoc): boolean {
+  if (userStore.isAdmin) return true
+  return record.userId === userStore.userInfo?.userId
+}
 
 // ---------------- 统计 ----------------
 const stats = ref<KnowledgeStats>({
@@ -334,7 +343,7 @@ const {
   loadData,
   loadError,
   pagination,
-  handleTableChange,
+  onTableChange,
 } = useTable<KnowledgeDoc, KnowledgeQueryParams>(queryKnowledgeDocs, () => searchForm)
 
 function retryLoad() {
@@ -352,16 +361,23 @@ function debouncedSearch() {
   }, 300)
 }
 
-const columns = computed<TableColumnsType>(() => [
-  { title: t('knowledge.columnTitle'), dataIndex: 'title', key: 'title', width: 260 },
-  { title: t('knowledge.category'), dataIndex: 'category', key: 'category', width: 120, align: 'center' },
-  { title: t('knowledge.scope'), dataIndex: 'scope', key: 'scope', width: 100, align: 'center' },
-  { title: t('knowledge.status'), dataIndex: 'status', key: 'status', width: 100, align: 'center' },
-  { title: t('knowledge.charCountLabel'), dataIndex: 'charCount', key: 'charCount', width: 90, align: 'center' },
-  { title: t('knowledge.chunkCountLabel'), dataIndex: 'chunkCount', key: 'chunkCount', width: 80, align: 'center' },
-  { title: t('common.createTime'), dataIndex: 'createTime', key: 'createTime', width: 170, align: 'center' },
-  { title: t('table.action'), key: 'action', width: 140, align: 'center', fixed: 'right' },
-])
+const columns = computed<TableColumnsType>(() => {
+  const base: TableColumnsType = [
+    { title: t('knowledge.columnTitle'), dataIndex: 'title', key: 'title', width: 260 },
+    { title: t('knowledge.category'), dataIndex: 'category', key: 'category', width: 120, align: 'center' },
+    { title: t('knowledge.scope'), dataIndex: 'scope', key: 'scope', width: 100, align: 'center' },
+    { title: t('knowledge.status'), dataIndex: 'status', key: 'status', width: 100, align: 'center' },
+    { title: t('knowledge.charCountLabel'), dataIndex: 'charCount', key: 'charCount', width: 90, align: 'center' },
+    { title: t('knowledge.chunkCountLabel'), dataIndex: 'chunkCount', key: 'chunkCount', width: 80, align: 'center' },
+    { title: t('common.createTime'), dataIndex: 'createTime', key: 'createTime', width: 170, align: 'center' },
+  ]
+  // 管理员看全局列表，加「归属人」列；普通用户只看自己的，无需这列
+  if (userStore.isAdmin) {
+    base.splice(1, 0, { title: t('knowledge.columnOwner'), dataIndex: 'ownerName', key: 'ownerName', width: 110, align: 'center' })
+  }
+  base.push({ title: t('table.action'), key: 'action', width: 140, align: 'center', fixed: 'right' })
+  return base
+})
 
 const chunkColumns: TableColumnsType = [
   { title: t('knowledge.chunkIndex'), dataIndex: 'chunkIndex', width: 80, align: 'center' },

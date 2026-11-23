@@ -30,6 +30,8 @@ export interface KnowledgeDoc {
   status: KnowledgeStatus
   errorMsg?: string
   userId: number
+  /** 归属用户名（仅管理员列表由后端填充，普通用户列表为空） */
+  ownerName?: string
   createTime?: string
   updateTime?: string
 }

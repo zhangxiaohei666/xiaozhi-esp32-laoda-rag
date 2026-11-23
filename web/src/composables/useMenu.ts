@@ -75,7 +75,12 @@ export function useMenu() {
               meta: {
                 title: parentKey, // 这里已经是多语言键了
                 icon: parentIconMap[parentKey] || 'SettingOutlined',
-                isAdmin: route.meta.isAdmin
+                isAdmin: route.meta.isAdmin,
+                // 父菜单自身没有 permission，从子路由继承：否则 filterMenuByPermission
+                // 里 L128 的 `item.meta.permission && ...` 永远为 false，空壳父菜单（子项被
+                // 全部过滤掉后）会残留下来，点了 403。
+                permission: route.meta.permission,
+                permissions: route.meta.permissions
               },
               children: []
             }

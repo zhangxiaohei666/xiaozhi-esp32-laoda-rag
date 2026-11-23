@@ -186,10 +186,10 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
             qw.and(w -> w.like(KnowledgeDocDO::getTitle, keyword)
                     .or().like(KnowledgeDocDO::getFileName, keyword));
         }
-        // 非管理员：只看「自己的 或 共享的」
+        // 非管理员：只看「自己的」。共享文档属于别人上传的公共资产，不进「我的文档」列表；
+        // 它仍会参与 RAG 检索（检索侧另有 scope==shared 的口径），这里只影响文档管理列表。
         if (ownerUserId != null) {
-            qw.and(w -> w.eq(KnowledgeDocDO::getUserId, ownerUserId)
-                    .or().eq(KnowledgeDocDO::getScope, KnowledgeDocDO.SCOPE_SHARED));
+            qw.eq(KnowledgeDocDO::getUserId, ownerUserId);
         }
         qw.orderByDesc(KnowledgeDocDO::getCreateTime);
 
