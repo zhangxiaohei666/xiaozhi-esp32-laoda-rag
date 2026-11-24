@@ -25,6 +25,17 @@ public interface ToolSession {
 
     String getDeviceId();
 
+    /**
+     * 当前会话归属的用户 ID（S0 新增，供 knowledge_search 等需要按用户过滤的工具使用）。
+     *
+     * <p>语音链路来自设备归属（{@code DeviceBO.userId}），Web 链路来自会话归属。
+     * 默认返回 null：实现方不透出时，调用方应按「只查共享资料」的 fail-closed 口径处理，
+     * 绝不能退化成"不过滤"（与 {@code RetrievalService} 的 userId==null 语义一致）。
+     */
+    default Integer getUserId() {
+        return null;
+    }
+
     ToolsSessionHolder getToolsSessionHolder();
 
     /** 设备 MCP 是否已初始化 */

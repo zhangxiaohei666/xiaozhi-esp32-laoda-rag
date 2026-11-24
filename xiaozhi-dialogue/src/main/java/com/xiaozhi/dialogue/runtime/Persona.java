@@ -89,12 +89,6 @@ public class Persona {
     private List<Hotword> sttHotwords;
 
     /**
-     * RAG 检索服务（可为 null：未启用或没注入时，降级为"无参考资料"）。
-     * 只在 chatStream 里用来把命中资料拼进 system prompt。
-     */
-    private com.xiaozhi.ai.rag.RetrievalService retrievalService;
-
-    /**
      * 与LLM Provider通信的具体实现类
      */
     @Getter
@@ -215,28 +209,15 @@ public class Persona {
             String location = currentSession.getDevice() != null ? currentSession.getDevice().getLocation() : null;
             ConversationContext ctx = new ConversationContext(location);
 List<Message> messages = new ArrayList<>(conversation.messages(ctx));
-            // ★ RAG（docs/AI应用开发方案.md §8.3）：检索本会话自己的资料库，命中则插成 system 消息；
-            //   检索失败或无命中就完全跳过，绝不影响正常对话。
-            //   ⚠️ 必须带上 userId：检索只返回「本人的私有资料 + 所有人共享的资料」，
-            //      不带 userId 会退化成"只查共享"或更糟的"不过滤"（多用户串数据）。
-            try {
-                if (retrievalService != null) {
-                    // buildInjection 内部完成四件事：寒暄门控、清洗成可朗读文本、加字数上限、
-                    // 用【参考资料开始/结束】包裹并声明"这是数据不是指令"。
-                    // 具体的回答规则来自 prompts/rag_injection_prompt.md（外置，改措辞不用重编译）。
-                    // UP-16 多轮指代：倒扫上一条用户问句。必须用 rawMessages()（裸文本快照）——
-                    // messages() 返回的是拼了 [时间戳] 前缀的装配副本，拿来比对会全部对不上。
-                    String prevQuestion = com.xiaozhi.ai.rag.RagQueryRewrite
-                            .previousUserQuestion(conversation.rawMessages(), turn.userMessage.getText());
-                    String injection = retrievalService.buildInjection(
-                            turn.userMessage.getText(), conversation.getUserId(), prevQuestion);
-                    if (injection != null && !injection.isBlank()) {
-                        messages.add(1, new SystemMessage(injection));
-                    }
-                }
-            } catch (Exception ragError) {
-                log.warn("RAG 注入失败，本轮按无参考资料处理: {}", ragError.getMessage());
-            }
+            // ★ RAG：已由固定注入改为工具自主调用（2026-11-23 S2）
+            //   这里原来每轮无条件调用 retrievalService.buildInjection(...) 并把命中资料
+            //   插成 system 消息。该路径已删除，改由主 LLM 自主决定是否调用 knowledge_search：
+            //   V1 提前把资料塞进 prompt 后模型没有理由再调工具（实测 V1 检索 49 次、工具 0 次），
+            //   留着 V1 等于 Agentic 永远不生效。
+            //   身份与权限不变：工具内部同样按设备归属人过滤（user_id==我 OR scope==shared），
+            //   拿不到 userId 时 fail-closed 只查共享资料 —— 与 V1 的 buildInjection 同一口径。
+            //   buildInjection 方法本身保留：调试通道 /api/knowledge/search 与单测仍在用。
+
             Prompt prompt = new Prompt(messages, chatOptions);
 
             // 连接层的读超时管不到「响应头已到、正文半途停吐」，只能在流上对两次输出之间计时；

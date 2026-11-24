@@ -61,6 +61,9 @@ public class KnowledgeDocResp {
     @Schema(description = "归属用户ID")
     private Integer userId;
 
+    @Schema(description = "归属用户名（仅管理员列表展示，普通用户列表不填充）")
+    private String ownerName;
+
     @Schema(description = "创建时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;

@@ -33,7 +33,8 @@ public interface KnowledgeConvert {
     /** DO → BO（service 模块内部使用）。 */
     KnowledgeChunkBO toBO(KnowledgeChunkDO chunkDO);
 
-    /** BO → Resp（server 层出参）。 */
+    /** BO → Resp（server 层出参）。{@code ownerName} 由 Controller 手动填充（要查用户表），这里忽略。 */
+    @org.mapstruct.Mapping(target = "ownerName", ignore = true)
     KnowledgeDocResp toResp(KnowledgeDocBO docBO);
 
     /** BO → Resp（server 层出参）。 */

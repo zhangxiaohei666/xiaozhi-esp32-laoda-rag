@@ -19,6 +19,7 @@ import com.xiaozhi.knowledge.convert.KnowledgeConvert;
 import com.xiaozhi.knowledge.service.KnowledgeAccessGuard;
 import com.xiaozhi.knowledge.service.KnowledgeDocService;
 import com.xiaozhi.server.web.BaseController;
+import com.xiaozhi.user.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -81,6 +82,9 @@ public class KnowledgeController extends BaseController {
 
     @Resource
     private KnowledgeIngestAppService knowledgeIngestAppService;
+
+    @Resource
+    private UserService userService;
 
     /** BO → Resp 转换：Controller 出参一律是 Resp，DO/BO 不出 web 层。 */
     @Resource
@@ -186,7 +190,7 @@ public class KnowledgeController extends BaseController {
     @GetMapping("/documents")
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:list")
-    @Operation(summary = "文档列表", description = "非管理员只返回自己的与共享的文档")
+    @Operation(summary = "文档列表", description = "非管理员只返回自己的文档；管理员返回全部并带归属用户名")
     public ApiResponse<PageResult<KnowledgeDocResp>> listDocuments(
             @Parameter(description = "页码") @RequestParam(value = "pageNo", defaultValue = "1") int pageNo,
             @Parameter(description = "每页条数") @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
@@ -195,12 +199,29 @@ public class KnowledgeController extends BaseController {
             @Parameter(description = "可见性") @RequestParam(value = "scope", required = false) String scope,
             @Parameter(description = "关键词") @RequestParam(value = "keyword", required = false) String keyword) {
 
-        Integer ownerFilter = knowledgeAccessGuard.needOwnerFilter()
-                ? knowledgeAccessGuard.currentUserId() : null;
-        return ApiResponse.success(knowledgeDocService.page(
+        boolean isAdmin = !knowledgeAccessGuard.needOwnerFilter();
+        Integer ownerFilter = isAdmin ? null : knowledgeAccessGuard.currentUserId();
+        PageResult<KnowledgeDocResp> result = knowledgeDocService.page(
                 Math.max(1, pageNo), Math.min(Math.max(1, pageSize), 200),
                 category, status, scope, keyword, ownerFilter)
-                .map(knowledgeConvert::toResp));
+                .map(knowledgeConvert::toResp);
+        // 管理员看到全局列表，补上归属用户名，否则只有 userId 数字无法区分谁传的
+        if (isAdmin) {
+            fillOwnerNames(result.getList());
+        }
+        return ApiResponse.success(result);
+    }
+
+    /** 管理员列表填充归属用户名：逐个走 {@link UserService#getBO} 命中用户缓存，数据量小不构成 N+1 压力。 */
+    private void fillOwnerNames(List<KnowledgeDocResp> records) {
+        for (KnowledgeDocResp record : records) {
+            if (record.getUserId() != null) {
+                var owner = userService.getBO(record.getUserId());
+                if (owner != null) {
+                    record.setOwnerName(owner.getUsername());
+                }
+            }
+        }
     }
 
     /**

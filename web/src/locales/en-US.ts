@@ -952,6 +952,7 @@ export default {
         keyword: 'Keyword',
         keywordPlaceholder: 'Title or file name',
         columnTitle: 'Title',
+        columnOwner: 'Owner',
         charCountLabel: 'Chars',
         chunkCountLabel: 'Chunks',
         sourceUrl: 'Source URL',
