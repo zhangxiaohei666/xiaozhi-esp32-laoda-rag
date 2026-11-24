@@ -4,13 +4,16 @@ import com.xiaozhi.common.model.bo.ConfigBO;
 import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.config.service.ConfigService;
 import com.xiaozhi.event.AiConfigChangedEvent;
+import com.xiaozhi.event.LlmModelFallbackEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
@@ -18,6 +21,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
@@ -240,4 +244,79 @@ class ChatModelFactoryTest {
         assertThat(result).isSameAs(stubModel);
         verify(configService).getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue());
     }
-}
+
+    /**
+     * 新建角色没选模型（modelId=null）是最常见的场景，必须落到默认模型，
+     * 不能因为"没绑配置"就把这一轮对话直接打死。
+     */
+    @Test
+    void roleWithoutModelIdFallsBackToTheDefaultOne() {
+        RoleBO role = new RoleBO();
+        role.setRoleName("未绑模型");
+        ConfigBO defaultConfig = new ConfigBO().setConfigId(99).setProvider("stub");
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue())).thenReturn(defaultConfig);
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
+
+        ChatModel result = chatModelFactory.getChatModel(role);
+
+        assertThat(result).isSameAs(stubModel);
+        verify(configService, never()).getConfig(any());
+    }
+
+    /** 降级必须留下可追溯的事实：谁降的、从哪个配置降到哪个、为什么 */
+    @Test
+    void fallbackPublishesAnEventCarryingFromAndTo() {
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ReflectionTestUtils.setField(chatModelFactory, "eventPublisher", publisher);
+
+        RoleBO role = new RoleBO();
+        role.setRoleId(7);
+        role.setRoleName("小助手");
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        ConfigBO defaultConfig = new ConfigBO().setConfigId(99).setProvider("stub");
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue())).thenReturn(defaultConfig);
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
+
+        chatModelFactory.getChatModel(role);
+
+        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(captor.capture());
+        LlmModelFallbackEvent event = (LlmModelFallbackEvent) captor.getValue();
+        assertThat(event.roleName()).isEqualTo("小助手");
+        assertThat(event.roleId()).isEqualTo(7);
+        assertThat(event.fromConfigId()).isEqualTo(11);
+        assertThat(event.toConfigId()).isEqualTo(99);
+        assertThat(event.reason()).contains("已停用");
+    }
+
+    /** 发布事件失败不能反向打断对话——兜底的目的就是让这一轮答下去 */
+    @Test
+    void failureToPublishTheFallbackEventDoesNotBreakTheTurn() {
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("监听方炸了"))
+                .when(publisher).publishEvent(any(Object.class));
+        ReflectionTestUtils.setField(chatModelFactory, "eventPublisher", publisher);
+
+        RoleBO role = new RoleBO();
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue()))
+                .thenReturn(new ConfigBO().setConfigId(99).setProvider("stub"));
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
+
+        assertThat(chatModelFactory.getChatModel(role)).isSameAs(stubModel);
+    }
+
+    /** 参数为空是调用方的错（IllegalArgumentException），配置缺失是环境状态不对（IllegalStateException） */
+    @Test
+    void nullConfigIdIsAnArgumentErrorAndMissingVisionConfigIsAStateError() {
+        assertThatThrownBy(() -> chatModelFactory.getEmbeddingModel((Integer) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("configId");
+
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue())).thenReturn(null);
+        assertThatThrownBy(() -> chatModelFactory.getVisionModel())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("多模态模型");
+    }}

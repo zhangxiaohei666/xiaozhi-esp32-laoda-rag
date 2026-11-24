@@ -7,14 +7,15 @@ import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.agent.AgentProviders;
 import com.xiaozhi.config.service.ConfigService;
 import com.xiaozhi.event.AiConfigChangedEvent;
+import com.xiaozhi.event.LlmModelFallbackEvent;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
-import org.springframework.util.Assert;
 
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,13 @@ public class ChatModelFactory {
     
     @Autowired
     private ConfigService configService;
+
+    /**
+     * 降级事件发布口。required=false：单元测试里直接 new 出来的工厂没有 Spring 容器，
+     * 发布口为空时只记日志、不影响主流程。
+     */
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
     
     /**
@@ -88,19 +96,47 @@ public class ChatModelFactory {
      */
     ConfigBO resolveConfig(RoleBO role) {
         Integer modelId = role.getModelId();
-        Assert.notNull(modelId, "配置ID不能为空");
-        ConfigBO config = configService.getConfig(modelId);
+        // 角色没绑模型（modelId=null）和绑了不存在/已停用的配置，都是"这一轮没有可用模型"，
+        // 走同一条降级路径。之前对 null 直接 Assert 抛错，等于最容易发生的场景反而没有兜底。
+        ConfigBO config = modelId == null ? null : configService.getConfig(modelId);
         if (config != null && !ConfigBO.STATE_DISABLED.equals(config.getState())) {
             return config;
         }
+        // 三条原因分开记，排障时才能一眼看出是"没绑"还是"绑了但坏了"
+        String reason;
+        if (modelId == null) {
+            reason = "角色未绑定模型";
+        } else if (config == null) {
+            reason = "绑定的模型配置不存在（modelId=" + modelId + "）";
+        } else {
+            reason = "绑定的模型配置已停用（modelId=" + modelId + "）";
+        }
         ConfigBO fallback = configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue());
         if (fallback == null) {
-            throw new IllegalStateException("角色「" + role.getRoleName() + "」绑定的模型配置已停用，也没有可用的默认模型，"
-                    + "请在配置管理里启用该配置或给角色改绑模型");
+            // 状态不可用，不是调用方参数错：用 IllegalStateException
+            throw new IllegalStateException("角色「" + role.getRoleName() + "」" + reason
+                    + "，且没有可用的默认对话模型；请在配置管理里启用该配置或给角色改绑模型");
         }
-        log.warn("角色绑定的模型配置已停用或不存在，回退默认模型 - 角色: {}, 原配置: {}, 默认配置: {}",
-                role.getRoleName(), modelId, fallback.getConfigId());
+        log.warn("LLM 模型降级 - 角色: {}, 原因: {}, fromConfigId: {}, toConfigId: {}, provider: {}",
+                role.getRoleName(), reason, modelId, fallback.getConfigId(), fallback.getProvider());
+        publishFallbackEvent(role, modelId, fallback, reason);
         return fallback;
+    }
+
+    /**
+     * 把降级事实抛给监控/后台。发布口为空（单测直接 new）或监听方抛异常都不影响本轮对话——
+     * 降级的兜底目的就是让对话继续，不能因为"通知失败"再炸一次。
+     */
+    private void publishFallbackEvent(RoleBO role, Integer fromConfigId, ConfigBO fallback, String reason) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new LlmModelFallbackEvent(role.getRoleName(), role.getRoleId(),
+                    fromConfigId, fallback.getConfigId(), fallback.getProvider(), reason));
+        } catch (RuntimeException e) {
+            log.warn("发布模型降级事件失败（不影响本轮对话） - 角色: {}", role.getRoleName(), e);
+        }
     }
 
     static String cacheKey(Integer modelId, RoleBO role) {
@@ -164,7 +200,9 @@ public class ChatModelFactory {
 
     public ChatModel getVisionModel() {
         ConfigBO config = configService.getDefaultConfig("llm", ConfigBO.ModelType.vision.getValue());
-        Assert.notNull(config, "未配置多模态模型");
+        if (config == null) {
+            throw new IllegalStateException("未配置多模态模型：请在配置管理里新增一条 llm/vision 类型的配置");
+        }
         // 走同一份缓存，避免每次多模态调用都新建 ChatModel(连带新建 HttpClient)
         String cacheKey = config.getConfigId() + ":vision";
         return chatModelCache.get(cacheKey, k -> createChatModel(config, new RoleBO()));
@@ -172,21 +210,31 @@ public class ChatModelFactory {
 
     public ChatModel getIntentModel() {
         ConfigBO config = configService.getDefaultConfig("llm", ConfigBO.ModelType.intent.getValue());
-        Assert.notNull(config, "未配置意图识别模型");
+        if (config == null) {
+            throw new IllegalStateException("未配置意图识别模型：请在配置管理里新增一条 llm/intent 类型的配置");
+        }
         return createChatModel(config, new RoleBO());
     }
 
     public EmbeddingModel getEmbeddingModel(Integer configId) {
-        Assert.notNull(configId, "配置ID不能为空");
+        if (configId == null) {
+            // 调用方传了空 ID：参数错误
+            throw new IllegalArgumentException("configId 不能为空");
+        }
         return embeddingModelCache.computeIfAbsent(configId, id -> {
             ConfigBO config = configService.getConfig(id);
-            Assert.notNull(config, "未找到配置, configId=" + id);
+            if (config == null) {
+                // 配置查不到：状态不可用
+                throw new IllegalStateException("未找到模型配置, configId=" + id);
+            }
             return getEmbeddingModel(config);
         });
     }
 
     public EmbeddingModel getEmbeddingModel(ConfigBO config) {
-        Assert.notNull(config, "未配置向量模型");
+        if (config == null) {
+            throw new IllegalStateException("未配置向量模型：请在配置管理里新增一条 llm/embedding 类型的配置");
+        }
         String providerName = config.getProvider().toLowerCase();
         ChatModelProvider provider = providers.get(providerName);
         if (provider != null) {
@@ -196,8 +244,8 @@ public class ChatModelFactory {
         if (provider != null) {
             return provider.createEmbeddingModel(config);
         }
-        throw new IllegalArgumentException(
-                String.format("不支持的Provider: %s, 可用的Providers: %s", providerName, providers.keySet()));
+        throw new IllegalStateException(
+                String.format("不支持的 Provider: %s, 可用的 Providers: %s", providerName, providers.keySet()));
     }
 
     /**
@@ -216,8 +264,8 @@ public class ChatModelFactory {
             provider = providers.get("openai");
         }
         if (provider == null) {
-            throw new IllegalArgumentException(
-                    String.format("不支持的Provider: %s, 可用的Providers: %s",
+            throw new IllegalStateException(
+                    String.format("不支持的 Provider: %s, 可用的 Providers: %s",
                             providerName,
                             providers.keySet())
             );
