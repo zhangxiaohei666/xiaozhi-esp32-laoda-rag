@@ -42,10 +42,11 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
     }
 
     @Tool(name = TOOL_NAME,
-            description = "查询图书馆座位的实时总体情况：全馆座位总数与当前空闲数、各楼层的空闲数、各区域的空闲数。"
+            description = "查询图书馆座位的总体情况（可按日期查今天或明天）：全馆座位总数与空闲数、"
+                    + "各楼层的空闲数、各区域的空闲数。"
                     + "当用户问到「图书馆现在人多吗」「还有没有位置」「还剩多少座位」「三楼人多不多」"
                     + "「哪个区域最空」「今天/明天好不好约」这类【问数量、问整体】的问题时，调用本工具。"
-                    + "座位数据是实时变化的，但同一轮里不要为了「确认一下」立刻重复调用同一个楼层和日期："
+                    + "同一轮里不要为了「确认一下」立刻重复调用同一个楼层和日期："
                     + "服务端有 30 秒短缓存，重复调用拿到的还是同一份数字。"
                     + "如果用户问的是「具体哪几个座位空着」，改用 library_area_seats。",
             returnDirect = false)
@@ -53,7 +54,7 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
             @ToolParam(description = "楼层或区域名称，用用户原话即可，例如「三楼」「英语角」「四楼公共阅览区」。"
                     + "不传表示查全馆。", required = false)
             String area,
-            @ToolParam(description = "日期。可传「今天」「明天」，或 yyyy-MM-dd。不传默认今天。", required = false)
+            @ToolParam(description = "日期：只能「今天」或「明天」，不传默认今天。", required = false)
             String date) {
 
         try {
@@ -85,7 +86,7 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
     private String renderWhole(LibraryApiClient.Overview ov, LibraryDateSupport.Parsed d) {
         StringBuilder sb = new StringBuilder();
         sb.append("图书馆座位（").append(d.date()).append(" ").append(d.label()).append("）：");
-        sb.append("总座位 ").append(ov.totalSeats()).append(" 个，当前空闲 ").append(ov.freeSeats()).append(" 个。");
+        sb.append("总座位 ").append(ov.totalSeats()).append(" 个，空闲 ").append(ov.freeSeats()).append(" 个。");
 
         if (!ov.storeys().isEmpty()) {
             sb.append("\n\n各楼层：");
@@ -171,7 +172,7 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
         }
         double ratio = (double) free / total;
         if (free == 0) {
-            return "现在已经满了，得等有人离开或改别的区域。";
+            return "这个位置已经满了，得等有人离开或换别的区域。";
         }
         if (ratio < 0.1) {
             return "剩得不多了，比较紧张。";
@@ -197,6 +198,6 @@ public class LibrarySeatOverviewFunction implements ToolsGlobalRegistry.GlobalFu
 
     @Override
     public String getToolDescription() {
-        return "查询图书馆座位实时总体情况（各楼层/各区域的空闲座位数）";
+        return "查询图书馆座位总体情况（按日期，各楼层/各区域的空闲座位数）";
     }
 }

@@ -46,17 +46,24 @@ public class LibraryAreaSeatsFunction implements ToolsGlobalRegistry.GlobalFunct
     }
 
     @Tool(name = TOOL_NAME,
-            description = "查询图书馆某个区域内【每一个座位】的实时状态：哪些座位空着可以坐、哪些已被占用。"
+            description = "查询图书馆某个区域内【每一个座位】的状态（可按日期查今天或明天）："
+                    + "哪些座位空着可以坐、哪些已被占用。"
                     + "当用户问到「英语角哪些座位空着」「自科借阅区1 还有位置吗」「XX 号座位有人吗」"
                     + "「帮我看看具体哪些位置」这类【要具体座位号】的问题时，调用本工具。"
-                    + "如果用户只问「还有没有位置」这种数量问题，用 library_seat_overview 更合适。"
-                    + "本工具一次只能查一个区域，area 必填。",
+                    + "如果用户只问「还有多少位置」「还剩多少」这种数量问题，用 library_seat_overview 更合适。"
+                    + "本工具一次只能查一个区域，area 必填。"
+                    + "startTime、endTime 是可选时段（HH:mm，如 14:00、16:00），"
+                    + "用户提了具体时段就传，没提就不传（查整天）。",
             returnDirect = false)
     public String areaSeats(
             @ToolParam(description = "区域名称，用用户原话即可，例如「英语角」「自科借阅区1」「四楼公共阅览区」。必填。")
             String area,
-            @ToolParam(description = "日期。可传「今天」「明天」，或 yyyy-MM-dd。不传默认今天。", required = false)
-            String date) {
+            @ToolParam(description = "日期：只能「今天」或「明天」，不传默认今天。", required = false)
+            String date,
+            @ToolParam(description = "开始时间（HH:mm，如 14:00）。用户提了时段才传。", required = false)
+            String startTime,
+            @ToolParam(description = "结束时间（HH:mm，如 16:00）。用户提了时段才传。", required = false)
+            String endTime) {
 
         try {
             if (area == null || area.isBlank()) {
@@ -80,7 +87,11 @@ public class LibraryAreaSeatsFunction implements ToolsGlobalRegistry.GlobalFunct
             }
 
             LibraryApiClient.Area target = resolved.areas().get(0);
-            List<LibraryApiClient.Seat> seats = apiClient.seats(target.id(), d.date());
+            // 指定了时段走新重载（4 参，实际区间）；没指定走老两参（全天 08:00-22:00）
+            List<LibraryApiClient.Seat> seats = (startTime != null && !startTime.isBlank())
+                    || (endTime != null && !endTime.isBlank())
+                    ? apiClient.seats(target.id(), d.date(), startTime, endTime)
+                    : apiClient.seats(target.id(), d.date());
             if (seats.isEmpty()) {
                 return floorPrefix(target) + target.name() + "（" + d.date() + " " + d.label()
                         + "）这会儿没有可查的座位数据，可能是这个区域今天不开放。";

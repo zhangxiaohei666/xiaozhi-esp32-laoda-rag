@@ -255,11 +255,18 @@ xiaozhi:
 
     # 写操作（预约/签退）只允许这一个用户执行。
     #
-    # ⚠️ 暂为占位值：等确认实际 userId 后再填。
-    #   预约是写操作，写错座位在图书馆系统里就是一次违约，
-    #   所以宁可先留一个不会命中的占位，也不要盲填。
-    #   0 = 未配置，此时写工具一律拒绝执行（见 LibraryWriteGuard）。
-    owner-user-id: ${LIBRARY_OWNER_USER_ID:0}
+    # 2026-11-24 定稿：查询人人可调用；预约/取消/临时离开/签退仅 admin（userId=1）。
+    # sys_user 种子数据里 admin 固定是 1，所以默认 1；换部署换身份时用
+    # 环境变量 LIBRARY_OWNER_USER_ID 覆盖。
+    #   0 = 未配置，此时写工具一律拒绝执行（fail-closed，见 LibraryOwnerGuard）。
+    owner-user-id: ${LIBRARY_OWNER_USER_ID:1}
+
+    # 写操作总开关。false 时写工具（prepare_* 与 confirm_action）不注册，
+    # 模型只知道查询工具。默认 false：写能力要等配置与测试都过了再显式打开。
+    write-enabled: ${LIBRARY_WRITE_ENABLED:false}
+
+    # 写操作待确认（Redis）存活秒数。够说一句"确认"，又不会留陈旧座位快照。
+    pending-ttl-seconds: ${LIBRARY_PENDING_TTL_SECONDS:120}
 
 # ============================================================
 # Sa-Token 认证框架配置（两边共用部分；jwt-secret-key 见各自 application.yml）

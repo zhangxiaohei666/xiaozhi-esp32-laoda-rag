@@ -50,6 +50,18 @@ public class LibraryProperties {
      * <p>只读工具不受这个限制（查询不会修改任何东西）；
      * 但写操作校验的是 {@code device.getUserId()}（设备归属人），
      * 不是前端传来的参数，所以伪造请求改不动这个值。
+     *
+     * <p>定稿口径（2026-11-24）：查询（含查询预约情况）人人可调用；
+     * 预约/取消/临时离开/签退仅 admin（userId=1）可调用，即本项配置为 {@code 1}。
      */
     private long ownerUserId = 0L;
+
+    /**
+     * 写操作总开关。false 时所有写工具（prepare_* 与 confirm_action）不注册，
+     * 只有查询工具可用。默认 false：写能力要等配置与测试都过了再显式打开。
+     */
+    private boolean writeEnabled = false;
+
+    /** 写操作待确认（Redis）的存活秒数。默认 120 秒，够说一句"确认"，又不会留陈旧快照。 */
+    private int pendingTtlSeconds = 120;
 }

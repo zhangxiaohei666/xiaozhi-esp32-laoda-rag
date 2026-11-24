@@ -147,9 +147,25 @@ async function ensureBrowser({ headed = false } = {}) {
     launchOpts.channel = channel;
     log(`使用系统浏览器 channel=${channel}`);
   }
-  context = await chromium.launchPersistentContext(PROFILE_DIR, launchOpts);
-  page = context.pages()[0] || (await context.newPage());
-  await restoreCookies();
+  // 2026-11-24：Windows 上 context.close() 后 profile 的单例锁/文件锁释放有延迟，
+  // 立刻重新 launchPersistentContext 会撞 SingletonLock，新浏览器进程直接自杀
+  // （报 "Target page, context or browser has been closed"）。加 5 次重试消化延迟。
+  for (let attempt = 1; ; attempt++) {
+    try {
+      context = await chromium.launchPersistentContext(PROFILE_DIR, launchOpts);
+      page = context.pages()[0] || (await context.newPage());
+      await restoreCookies();
+      return;
+    } catch (e) {
+      const firstLine = String(e.message).split('\n')[0];
+      if (attempt >= 5) {
+        log(`启动浏览器失败（已重试 ${attempt} 次）:`, firstLine);
+        throw e;
+      }
+      log(`启动浏览器第 ${attempt} 次失败，2.5s 后重试: ${firstLine}`);
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+  }
 }
 
 /**
