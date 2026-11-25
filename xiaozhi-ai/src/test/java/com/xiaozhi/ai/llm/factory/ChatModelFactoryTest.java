@@ -1,5 +1,6 @@
 package com.xiaozhi.ai.llm.factory;
 
+import com.github.benmanes.caffeine.cache.Cache;
 import com.xiaozhi.common.model.bo.ConfigBO;
 import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.config.service.ConfigService;
@@ -21,6 +22,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -319,4 +321,50 @@ class ChatModelFactoryTest {
         assertThatThrownBy(() -> chatModelFactory.getVisionModel())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("多模态模型");
-    }}
+    }
+
+    /** TTL 兜底：主缓存带 expireAfterAccess，Redis 广播丢失时僵尸配置最迟 24h 强制重建 */
+    @Test
+    void chatModelCacheExpiresAfterAccessForBroadcastLossFallback() {
+        Cache<?, ?> cache = (Cache<?, ?>) ReflectionTestUtils.getField(chatModelFactory, "chatModelCache");
+        assertThat(cache).isNotNull();
+        assertThat(cache.policy().expireAfterAccess()).isPresent();
+    }
+
+    /** 降级去重：同一角色降级目标没变，事件只发一次；恢复正常后再降级，重新告警 */
+    @Test
+    void fallbackDeduplicatesWhileTargetUnchangedAndReAlertsAfterRecovery() {
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ReflectionTestUtils.setField(chatModelFactory, "eventPublisher", publisher);
+
+        RoleBO role = new RoleBO();
+        role.setRoleId(7);
+        role.setRoleName("小助手");
+        role.setModelId(11);
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        ConfigBO defaultConfig = new ConfigBO().setConfigId(99).setProvider("stub");
+        when(configService.getDefaultConfig("llm", ConfigBO.ModelType.chat.getValue())).thenReturn(defaultConfig);
+        when(stubProvider.createChatModel(any(), any())).thenReturn(stubModel);
+
+        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+
+        // 连续两轮降级，目标都是 99：事件只发一次
+        chatModelFactory.getChatModel(role);
+        chatModelFactory.getChatModel(role);
+        verify(publisher, times(1)).publishEvent(captor.capture());
+        assertThat(((LlmModelFallbackEvent) captor.getValue()).toConfigId()).isEqualTo(99);
+
+        clearInvocations(publisher);
+
+        // 配置修好：正常返回并清除降级记忆
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setProvider("stub").setState(ConfigBO.STATE_ENABLED));
+        chatModelFactory.getChatModel(role);
+        verify(publisher, never()).publishEvent(any());
+
+        // 再次停用：重新告警
+        when(configService.getConfig(11)).thenReturn(new ConfigBO().setConfigId(11).setState(ConfigBO.STATE_DISABLED));
+        chatModelFactory.getChatModel(role);
+        verify(publisher, times(1)).publishEvent(captor.capture());
+        assertThat(((LlmModelFallbackEvent) captor.getValue()).toConfigId()).isEqualTo(99);
+    }
+}

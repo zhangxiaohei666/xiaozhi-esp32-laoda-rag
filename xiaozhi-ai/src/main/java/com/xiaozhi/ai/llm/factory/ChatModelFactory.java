@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,14 +56,25 @@ public class ChatModelFactory {
     /**
      * key 见 cacheKey()，配置或角色参数变更时失效。
      * temperature/topP 是角色自由填写的数值，组合数没有上限，用 maximumSize 兜底防止无限增长；
+     * expireAfterAccess(24h) 是 Redis 广播丢失时的兜底——僵尸配置最迟 24h 强制重建；
      * 容量淘汰只从 Map 里摘除引用交给 GC，不会主动 close，避免误伤正在使用该实例的会话。
      */
     private final Cache<String, ChatModel> chatModelCache = Caffeine.newBuilder()
             .maximumSize(256)
+            .expireAfterAccess(Duration.ofHours(24))
             .build();
 
-    /** key 为 configId，配置变更时失效 */
-    private final Map<Integer, EmbeddingModel> embeddingModelCache = new ConcurrentHashMap<>();
+    /** key 为 configId，配置变更时失效；与主缓存同技术栈：容量 + TTL 兜底 */
+    private final Cache<Integer, EmbeddingModel> embeddingModelCache = Caffeine.newBuilder()
+            .maximumSize(64)
+            .expireAfterAccess(Duration.ofHours(24))
+            .build();
+
+    /**
+     * 每个角色上次降级的目标配置 ID：目标没变时降级为 debug 级别、不再重复发事件。
+     * 配置停用期间设备每说一句话就触发一次降级，不去重一天能淹几万条告警。
+     */
+    private final Map<Integer, Integer> lastFallbackTarget = new ConcurrentHashMap<>();
 
     @Autowired
     private ObservationRegistry registry;
@@ -100,6 +112,10 @@ public class ChatModelFactory {
         // 走同一条降级路径。之前对 null 直接 Assert 抛错，等于最容易发生的场景反而没有兜底。
         ConfigBO config = modelId == null ? null : configService.getConfig(modelId);
         if (config != null && !ConfigBO.STATE_DISABLED.equals(config.getState())) {
+            if (role.getRoleId() != null) {
+                // 恢复正常：清除该角色的降级记忆，下次再降级要重新告警
+                lastFallbackTarget.remove(role.getRoleId());
+            }
             return config;
         }
         // 三条原因分开记，排障时才能一眼看出是"没绑"还是"绑了但坏了"
@@ -117,9 +133,20 @@ public class ChatModelFactory {
             throw new IllegalStateException("角色「" + role.getRoleName() + "」" + reason
                     + "，且没有可用的默认对话模型；请在配置管理里启用该配置或给角色改绑模型");
         }
-        log.warn("LLM 模型降级 - 角色: {}, 原因: {}, fromConfigId: {}, toConfigId: {}, provider: {}",
-                role.getRoleName(), reason, modelId, fallback.getConfigId(), fallback.getProvider());
-        publishFallbackEvent(role, modelId, fallback, reason);
+        // 匿名角色（roleId=null）没有稳定身份，不做去重，每次降级都告警
+        boolean targetChanged = true;
+        if (role.getRoleId() != null) {
+            Integer last = lastFallbackTarget.put(role.getRoleId(), fallback.getConfigId());
+            targetChanged = last == null || !last.equals(fallback.getConfigId());
+        }
+        if (targetChanged) {
+            log.warn("LLM 模型降级 - 角色: {}, 原因: {}, fromConfigId: {}, toConfigId: {}, provider: {}",
+                    role.getRoleName(), reason, modelId, fallback.getConfigId(), fallback.getProvider());
+            publishFallbackEvent(role, modelId, fallback, reason);
+        } else {
+            log.debug("LLM 模型仍处于降级状态，跳过重复告警 - 角色: {}, toConfigId: {}",
+                    role.getRoleName(), fallback.getConfigId());
+        }
         return fallback;
     }
 
@@ -175,27 +202,10 @@ public class ChatModelFactory {
         if (configId == null) {
             return;
         }
-        chatModelCache.asMap().entrySet().removeIf(entry -> {
-            if (!entry.getKey().startsWith(configId + ":")) {
-                return false;
-            }
-            closeIfNeeded(entry.getValue());
-            return true;
-        });
-        embeddingModelCache.remove(configId);
-    }
-
-    /**
-     * 移出缓存的 ChatModel 若自带 HTTP 客户端等常驻资源，在此释放；只有不再被复用的实例才会走到这里。
-     */
-    private void closeIfNeeded(ChatModel chatModel) {
-        if (chatModel instanceof AutoCloseable closeable) {
-            try {
-                closeable.close();
-            } catch (Exception e) {
-                log.warn("释放ChatModel资源失败: {}", chatModel.getClass().getSimpleName(), e);
-            }
-        }
+        // 只摘引用、不 close：实例可能正被 Persona/网页聊天/摘要器持有并在途使用，主动 close 会误伤；
+        // 与容量淘汰策略统一（见 chatModelCache 字段注释），资源交给 GC 与连接池空闲回收。
+        chatModelCache.asMap().entrySet().removeIf(entry -> entry.getKey().startsWith(configId + ":"));
+        embeddingModelCache.invalidate(configId);
     }
 
     public ChatModel getVisionModel() {
@@ -208,20 +218,12 @@ public class ChatModelFactory {
         return chatModelCache.get(cacheKey, k -> createChatModel(config, new RoleBO()));
     }
 
-    public ChatModel getIntentModel() {
-        ConfigBO config = configService.getDefaultConfig("llm", ConfigBO.ModelType.intent.getValue());
-        if (config == null) {
-            throw new IllegalStateException("未配置意图识别模型：请在配置管理里新增一条 llm/intent 类型的配置");
-        }
-        return createChatModel(config, new RoleBO());
-    }
-
     public EmbeddingModel getEmbeddingModel(Integer configId) {
         if (configId == null) {
             // 调用方传了空 ID：参数错误
             throw new IllegalArgumentException("configId 不能为空");
         }
-        return embeddingModelCache.computeIfAbsent(configId, id -> {
+        return embeddingModelCache.get(configId, id -> {
             ConfigBO config = configService.getConfig(id);
             if (config == null) {
                 // 配置查不到：状态不可用
