@@ -417,6 +417,7 @@ export default {
     setAsDefaultFailed: 'Setting failed',
     deleteRoleSuccess: 'Delete successful',
     deleteRoleFailed: 'Delete failed',
+    updateRoleFailed: 'Update failed',
     createRoleSuccess: 'Create successful',
     updateRoleSuccess: 'Update successful',
     sessionSettings: 'Session Settings',
@@ -460,6 +461,16 @@ export default {
     sttHotwords: 'Recognition Hotwords',
     sttHotwordsPlaceholder: 'One per line, e.g.\nZeyu\nMi Speaker 11',
     sttHotwordsTip: 'Names, brands and device names that are easily misrecognized. One per line, optionally followed by a space and a weight (1-11, defaults to 10), up to 100 entries. Supported by some recognition services only.',
+
+    // Public role
+    publicRole: 'Public',
+    openToAll: 'Open to all users',
+    openToAllTip: 'When enabled, all users can see and select it. When disabled, it is hidden from new users and cannot be newly bound; existing devices keep working.',
+    publicRoleEditTip: 'This is a public role. Changes to its persona or voice take effect immediately for everyone using it.',
+    defaultPublicCannotClose: 'The public default role must stay open',
+    publicRoleCannotDelete: 'Public roles cannot be deleted. Turn off the open switch first.',
+    openSuccess: 'Opened to all users',
+    closeSuccess: 'Closed to new users; bound devices are unaffected',
   },
 
   template: {
@@ -869,6 +880,35 @@ export default {
     retry: 'Reload',
   },
 
+  myRole: {
+    title: 'My Roles',
+    subtitle: 'Use public roles right away, or create your own assistant with a custom persona and voice.',
+    create: 'New Role',
+    edit: 'Edit Role',
+    createFirst: 'Create your first role',
+    empty: 'You have no roles yet',
+    emptyTip: 'Your own roles never affect public roles. You can rename them or change the prompt and voice anytime.',
+    name: 'Role Name',
+    namePlaceholder: 'e.g. My Study Assistant',
+    nameRequired: 'Please enter a role name',
+    nameTooLong: 'Role name cannot exceed 50 characters',
+    prompt: 'System Prompt',
+    promptPlaceholder: 'Describe the identity, tone and answering style, e.g. You are a patient algorithm tutor...',
+    promptTooLong: 'Prompt cannot exceed 4000 characters',
+    voice: 'Voice',
+    voicePlaceholder: 'Choose a voice',
+    voiceTip: 'Only featured voices are available. Leave empty to follow the public default voice.',
+    followDefault: 'Follow public default voice',
+    followDefaultWithName: 'Follow public default voice ({name})',
+    noPrompt: 'No prompt yet',
+    legacyVoiceHint: 'The current voice is no longer in the featured list. Saving will switch it to the public default voice.',
+    createSuccess: 'Role created',
+    updateSuccess: 'Role updated',
+    deleteSuccess: 'Role deleted',
+    deleteTitle: 'Delete Role',
+    deleteContent: 'Delete “{name}”? If a device is still bound to it, rebind the device first.',
+  },
+
   router: {
     title: {
       login: 'Login',
@@ -879,6 +919,7 @@ export default {
       device: 'Device Management',
       message: 'Message Management',
       role: 'Role Configuration',
+      myRoles: 'My Roles',
       authRole: 'Auth Roles',
       template: 'Template Management',
       modelConfig: 'Model Configuration',
@@ -973,6 +1014,10 @@ export default {
 
   chat: {
     selectRole: 'Select Role',
+    publicGroup: 'Public Roles',
+    myGroup: 'My Roles',
+    publicTag: 'Public',
+    manageMyRoles: 'Manage my roles',
     noRole: 'No Role',
     newChat: 'New Chat',
     history: 'History',

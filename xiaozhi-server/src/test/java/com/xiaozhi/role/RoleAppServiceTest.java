@@ -285,6 +285,89 @@ class RoleAppServiceTest {
         assertThat(resp.getInactiveTimeoutSeconds()).isEqualTo(60);
     }
 
+    @Test
+    void closeDefaultPublicRoleIsRefused() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(publicRole()));
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(false);
+
+        assertThatThrownBy(() -> roleAppService.update(ROLE_ID, req))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("公共默认角色必须保持开放，请先将其他公共角色设为默认");
+        verify(roleRepository, never()).save(any());
+    }
+
+    @Test
+    void closingDisabledOpenPublicRoleDoesNotTripTheLastRoleGuard() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(disabledOpenPublicRole()));
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(false);
+
+        RoleResp resp = roleAppService.update(ROLE_ID, req);
+
+        assertThat(resp.getIsOpen()).isEqualTo("0");
+        // 停用角色不在供给里，不该去数"还剩几个可用公共角色"
+        verify(roleService, never()).countOpenPublic();
+        verify(roleRepository).save(any(Role.class));
+    }
+
+    @Test
+    void closeLastOpenPublicRoleIsRefused() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(publicNonDefaultRole()));
+        when(roleService.countOpenPublic()).thenReturn(1L);
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(false);
+
+        assertThatThrownBy(() -> roleAppService.update(ROLE_ID, req))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("至少保留一个开放且启用的公共角色");
+        verify(roleRepository, never()).save(any());
+    }
+
+    @Test
+    void closingOneOfTwoOpenPublicRolesSucceeds() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(publicNonDefaultRole()));
+        when(roleService.countOpenPublic()).thenReturn(2L);
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(false);
+
+        RoleResp resp = roleAppService.update(ROLE_ID, req);
+
+        assertThat(resp.getIsOpen()).isEqualTo("0");
+        verify(roleRepository).save(any(Role.class));
+    }
+
+    @Test
+    void openFlagIsRefusedOnNonAdminRole() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(storedRole()));
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(true);
+
+        assertThatThrownBy(() -> roleAppService.update(ROLE_ID, req))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("只有管理员名下的角色可以设置开放");
+        verify(roleRepository, never()).save(any());
+    }
+
+    @Test
+    void disablingAnOpenRoleTogetherWithOpeningIsRefused() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(publicNonDefaultRole()));
+
+        RoleUpdateReq req = new RoleUpdateReq();
+        req.setIsOpen(true);
+        req.setState(Role.STATE_DISABLED);
+
+        assertThatThrownBy(() -> roleAppService.update(ROLE_ID, req))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("停用的角色不能开放给全体用户");
+        verify(roleRepository, never()).save(any());
+    }
+
     /** 模拟仓储 save()：insert 后回填自增主键 */
     private void assignIdOnSave() {
         doAnswer(invocation -> {
@@ -315,6 +398,24 @@ class RoleAppServiceTest {
     /** 管理员名下的公共角色 */
     private static Role publicRole() {
         return new Role(ROLE_ID, 1, null, "牢大", null, Role.STATE_ENABLED, true, true, 60,
+                new LlmConfig(5, null, null),
+                new VoiceConfig(3, null, null, null, null, null),
+                new AudioConfig(null, null, null, null),
+                CREATED_AT, CREATED_AT);
+    }
+
+    /** 管理员名下已开放、但不是默认的角色（雪峰这类） */
+    private static Role publicNonDefaultRole() {
+        return new Role(ROLE_ID, 1, null, "雪峰", null, Role.STATE_ENABLED, true, false, 60,
+                new LlmConfig(5, null, null),
+                new VoiceConfig(3, null, null, null, null, null),
+                new AudioConfig(null, null, null, null),
+                CREATED_AT, CREATED_AT);
+    }
+
+    /** 已开放但已停用的公共角色：关闭它不减少可用公共角色供给 */
+    private static Role disabledOpenPublicRole() {
+        return new Role(ROLE_ID, 1, null, "雪峰", null, Role.STATE_DISABLED, true, false, 60,
                 new LlmConfig(5, null, null),
                 new VoiceConfig(3, null, null, null, null, null),
                 new AudioConfig(null, null, null, null),

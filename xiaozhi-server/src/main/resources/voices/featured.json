@@ -1,0 +1,14 @@
+{
+  "voices": [
+    {"provider": "aliyun", "value": "cosyvoice-v2:cosyvoice-v2-laoda-d21bc5a42cce4691b6dd81ecd6f74379", "label": "牢大"},
+    {"provider": "aliyun", "value": "cosyvoice-v3-flash:cosyvoice-v3-flash-xfv3f-eff35149e707414b9b0d360051a55471", "label": "雪峰"},
+    {"provider": "edge", "value": "zh-CN-XiaoxiaoNeural", "label": "晓晓"},
+    {"provider": "edge", "value": "zh-CN-YunxiNeural", "label": "云希"},
+    {"provider": "edge", "value": "zh-CN-XiaoyiNeural", "label": "晓伊"},
+    {"provider": "aliyun", "value": "longxiaochun_v2", "label": "龙小淳"},
+    {"provider": "aliyun", "value": "longxiu_v2", "label": "龙修"},
+    {"provider": "aliyun", "value": "qwen3-tts-instruct-flash-realtime:Cherry", "label": "Cherry"},
+    {"provider": "aliyun", "value": "qwen3-tts-flash-realtime:Ethan", "label": "Ethan"},
+    {"provider": "aliyun", "value": "qwen3-tts-instruct-flash-realtime:Serena", "label": "Serena"}
+  ]
+}

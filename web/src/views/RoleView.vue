@@ -2,6 +2,7 @@
 import { ref, reactive, nextTick, computed } from 'vue'
 import { message, type FormInstance } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
+import { useMediaQuery } from '@vueuse/core'
 import {
   CameraOutlined,
   DeleteOutlined,
@@ -131,6 +132,10 @@ const applyTunedDefaults = () => {
 
 // 编辑状态
 const editingRoleId = ref<number>()
+const editingRoleIsPublic = computed(() => {
+  const role = roleList.value.find((item: Role) => item.roleId === editingRoleId.value)
+  return role?.isOpen == 1
+})
 const submitLoading = ref(false)
 const lastInactiveTimeoutSeconds = ref(0)
 const inactiveTimeoutEnabled = computed({
@@ -196,6 +201,8 @@ const {
 } = useMcpToolSelection()
 
 // 表格列定义
+const isMobile = useMediaQuery('(max-width: 768px)')
+
 const columns = computed<TableColumnsType>(() => [
   {
     title: t('common.avatar'),
@@ -246,11 +253,19 @@ const columns = computed<TableColumnsType>(() => [
     align: 'center'
   },
   {
+    title: t('role.openToAll'),
+    dataIndex: 'isOpen',
+    width: 120,
+    align: 'center',
+    // 桌面固定在右侧，避免列多时开关被挤出可视区；移动端取消固定，保留横向滚动
+    fixed: isMobile.value ? undefined : 'right'
+  },
+  {
     title: t('table.action'),
     dataIndex: 'operation',
     width: 250,
     align: 'center',
-    fixed: 'right'
+    fixed: isMobile.value ? undefined : 'right'
   }
 ])
 
@@ -344,6 +359,23 @@ const handleSetDefault = async (roleId: number) => {
     successText: t('role.setAsDefaultSuccess'),
     errorText: t('role.setAsDefaultFailed'),
   })
+
+  if (updated) {
+    await fetchData()
+  }
+}
+
+// 公共角色开关：只提交 isOpen，后端按局部更新合并，不会把其它字段清空
+const handleToggleOpen = async (record: Role, checked: boolean) => {
+  const updated = await executeSetDefaultRole(
+    () => updateRole({ roleId: record.roleId, isOpen: checked }),
+    {
+      loadingRef: loading,
+      showSuccess: true,
+      successText: checked ? t('role.openSuccess') : t('role.closeSuccess'),
+      errorText: t('role.updateRoleFailed'),
+    }
+  )
 
   if (updated) {
     await fetchData()
@@ -697,7 +729,12 @@ Promise.all([
               <!-- 角色名称 -->
               <template v-else-if="column.dataIndex === 'roleName'">
                 <a-tooltip :title="record.roleName" placement="top">
-                  <span class="ellipsis-text">{{ record.roleName }}</span>
+                  <span class="role-name-cell">
+                    <span class="ellipsis-text">{{ record.roleName }}</span>
+                    <a-tag v-if="record.isOpen == 1" color="blue" class="public-role-tag">
+                      {{ t('role.publicRole') }}
+                    </a-tag>
+                  </span>
                 </a-tooltip>
               </template>
 
@@ -757,6 +794,21 @@ Promise.all([
                 <span v-else>-</span>
               </template>
 
+              <!-- 开放开关：默认公共角色禁用，避免把注册兜底关掉 -->
+              <template v-else-if="column.dataIndex === 'isOpen'">
+                <a-tooltip :title="record.isDefault == 1 ? t('role.defaultPublicCannotClose') : t('role.openToAllTip')">
+                  <a-switch
+                    size="small"
+                    :checked="record.isOpen == 1"
+                    :disabled="record.isDefault == 1 && record.isOpen == 1"
+                    :loading="loading"
+                    checked-children="开"
+                    un-checked-children="关"
+                    @change="(checked: boolean | string | number) => handleToggleOpen(record, Boolean(checked))"
+                  />
+                </a-tooltip>
+              </template>
+
               <!-- 操作 -->
               <template v-else-if="column.dataIndex === 'operation'">
                 <TableActionButtons
@@ -794,6 +846,14 @@ Promise.all([
           :tab="editingRoleId ? t('role.updateRole') : t('role.createRole')"
           v-if="userStore.hasPermission(editingRoleId ? 'system:role:api:update' : 'system:role:api:create')"
         >
+          <a-alert
+            v-if="editingRoleIsPublic"
+            type="warning"
+            show-icon
+            class="public-role-edit-alert"
+            :message="t('role.publicRoleEditTip')"
+          />
+
           <a-form
             ref="formRef"
             :model="formData"
@@ -1490,6 +1550,28 @@ Promise.all([
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.role-name-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.role-name-cell .ellipsis-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.public-role-tag {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.public-role-edit-alert {
+  margin-bottom: 16px;
 }
 
 // 表格单元格样式

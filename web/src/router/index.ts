@@ -82,6 +82,18 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'my-roles',
+        name: 'my-roles',
+        component: () => import('../views/MyRoleView.vue'),
+        meta: {
+          title: 'router.title.myRoles',
+          icon: 'SoundOutlined',
+          requiresAuth: true,
+          // 复用已有 API 权限，不新增权限键；管理端角色页仍要 system:role
+          permission: 'system:role:api:list',
+        },
+      },
+      {
         path: 'template',
         name: 'template',
         component: () => import('../views/TemplateView.vue'),

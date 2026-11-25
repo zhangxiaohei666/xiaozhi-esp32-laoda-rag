@@ -86,12 +86,18 @@ public class RoleAppService {
         Role role = roleRepository.findById(roleId)
                 .orElseThrow(() -> new ResourceNotFoundException("角色不存在或无权访问"));
 
+        validateOpenChange(role, req);
+
         role.update(req.getRoleName(), req.getRoleDesc(), req.getAvatar(),
                 new LlmConfig(req.getModelId(), req.getTemperature(), req.getTopP()),
                 new VoiceConfig(req.getTtsId(), req.getSttId(), req.getVoiceName(), req.getTtsPitch(), req.getTtsSpeed(), req.getSttHotwords()),
                 new AudioConfig(req.getVadEnergyTh(), req.getVadSpeechTh(), req.getVadSilenceTh(), req.getVadSilenceMs()),
                 req.getIsDefault() == null ? null : "1".equals(req.getIsDefault()),
                 req.getInactiveTimeoutSeconds());
+
+        if (req.getIsOpen() != null) {
+            role.changeOpen(req.getIsOpen());
+        }
         
         if (Role.STATE_ENABLED.equals(req.getState())) {
             role.enable();
@@ -101,6 +107,51 @@ public class RoleAppService {
         roleRepository.save(role);
 
         return roleConvert.toResp(role);
+    }
+
+    /**
+     * 公共角色开关的三条硬约束：
+     * <ol>
+     *   <li>只有 admin 名下的角色能被标记为公共；</li>
+     *   <li>公共默认角色必须保持开放（设备/注册兜底都指向它）；</li>
+     *   <li>关闭后至少还要剩一个"开放且启用"的公共角色，否则普通用户无角色可用。</li>
+     * </ol>
+     * 校验都放在落库前；抛异常即事务回滚，不会出现"开关只改了一半"。
+     */
+    private void validateOpenChange(Role role, RoleUpdateReq req) {
+        if (req.getIsOpen() == null) {
+            // 没改开关，但可能通过 isDefault/state 把状态改成了非法组合
+            boolean defaultAfter = req.getIsDefault() == null ? role.isDefault() : "1".equals(req.getIsDefault());
+            boolean openAfter = role.isOpen();
+            if (Integer.valueOf(ADMIN_USER_ID).equals(role.getUserId()) && defaultAfter && !openAfter) {
+                throw new IllegalStateException("公共默认角色必须处于开放状态");
+            }
+            return;
+        }
+
+        if (!Integer.valueOf(ADMIN_USER_ID).equals(role.getUserId())) {
+            throw new IllegalStateException("只有管理员名下的角色可以设置开放");
+        }
+
+        boolean openAfter = req.getIsOpen();
+        boolean defaultAfter = req.getIsDefault() == null ? role.isDefault() : "1".equals(req.getIsDefault());
+        String stateAfter = req.getState() == null ? role.getState() : req.getState();
+
+        if (openAfter && !Role.STATE_ENABLED.equals(stateAfter)) {
+            throw new IllegalStateException("停用的角色不能开放给全体用户");
+        }
+        if (!openAfter && role.isOpen() && role.isDefault()) {
+            throw new IllegalStateException("公共默认角色必须保持开放，请先将其他公共角色设为默认");
+        }
+        if (defaultAfter && !openAfter) {
+            throw new IllegalStateException("公共默认角色必须处于开放状态");
+        }
+        if (!openAfter && role.isOpen()) {
+            // 停用的角色本来就不在"可用公共角色"里，关它不会减少供给，不该被最后一条守卫拦住
+            if (Role.STATE_ENABLED.equals(role.getState()) && roleService.countOpenPublic() <= 1) {
+                throw new IllegalStateException("至少保留一个开放且启用的公共角色");
+            }
+        }
     }
 
 

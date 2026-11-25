@@ -3,12 +3,14 @@ package com.xiaozhi.role;
 import com.xiaozhi.common.model.resp.RoleDefaultsResp;
 import com.xiaozhi.server.web.BaseController;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.xiaozhi.common.annotation.AuditLog;
 import com.xiaozhi.common.annotation.CheckOwner;
 import com.xiaozhi.common.exception.OperationFailedException;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.model.req.RoleCreateReq;
+import com.xiaozhi.common.model.req.MyRoleReq;
 import com.xiaozhi.common.model.req.RolePageReq;
 import com.xiaozhi.common.model.req.RoleUpdateReq;
 import com.xiaozhi.common.model.req.TestVoiceReq;
@@ -54,6 +56,9 @@ public class RoleController extends BaseController {
     private RoleAppService roleAppService;
 
     @Resource
+    private MyRoleAppService myRoleAppService;
+
+    @Resource
     private SherpaVoiceProbe sherpaVoiceProbe;
 
     @Resource
@@ -80,6 +85,46 @@ public class RoleController extends BaseController {
     @Operation(summary = "根据条件查询角色信息", description = "返回角色信息列表")
     public ApiResponse<PageResult<RoleResp>> list(@Valid RolePageReq req) {
         return ApiResponse.success(roleAppService.page(req, CurrentUser.id()));
+    }
+
+    /**
+     * 我的角色（普通用户自建的私人角色）。
+     * <p>只校验登录，不要求角色管理权限；归属校验在 MyRoleAppService 内做，userId 一律取会话。
+     */
+    @GetMapping("/my")
+    @ResponseBody
+    @SaCheckLogin
+    @Operation(summary = "我的角色列表", description = "当前用户自建的私人角色")
+    public ApiResponse<List<RoleResp>> myRoles() {
+        return ApiResponse.success(myRoleAppService.list(CurrentUser.id()));
+    }
+
+    @PostMapping("/my")
+    @ResponseBody
+    @SaCheckLogin
+    @AuditLog(module = "我的角色", operation = "创建私人角色")
+    @Operation(summary = "创建我的角色", description = "名称、提示词、音色三选；引擎参数继承公共默认角色")
+    public ApiResponse<RoleResp> createMyRole(@Valid @RequestBody MyRoleReq param) {
+        return ApiResponse.success(myRoleAppService.create(param, CurrentUser.id()));
+    }
+
+    @PutMapping("/my/{roleId}")
+    @ResponseBody
+    @SaCheckLogin
+    @AuditLog(module = "我的角色", operation = "更新私人角色")
+    @Operation(summary = "更新我的角色", description = "只允许修改自己的私人角色")
+    public ApiResponse<RoleResp> updateMyRole(@PathVariable Integer roleId, @Valid @RequestBody MyRoleReq param) {
+        return ApiResponse.success(myRoleAppService.update(roleId, param, CurrentUser.id()));
+    }
+
+    @DeleteMapping("/my/{roleId}")
+    @ResponseBody
+    @SaCheckLogin
+    @AuditLog(module = "我的角色", operation = "删除私人角色")
+    @Operation(summary = "删除我的角色", description = "仍绑定设备时拒绝删除")
+    public ApiResponse<Void> deleteMyRole(@PathVariable Integer roleId) {
+        myRoleAppService.delete(roleId, CurrentUser.id());
+        return ApiResponse.success("删除成功");
     }
 
     @GetMapping("/defaults")

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { Modal } from 'ant-design-vue'
 import {
   PlusOutlined,
@@ -15,6 +16,7 @@ import {
 import { useSelectLoadMore } from '@/composables/useSelectLoadMore'
 import { useChatSession } from '@/composables/useChatSession'
 import { queryRoles } from '@/services/role'
+import { ROUTES } from '@/router/routes'
 import { formatShortDateTime } from '@/utils/date'
 import type { Conversation } from '@/types/chat'
 import type { Role } from '@/types/role'
@@ -22,6 +24,7 @@ import ChatMessageItem from '@/components/chat/ChatMessageItem.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 
 // 会话 / 消息 / 历史
 const {
@@ -48,14 +51,23 @@ const {
 } = useSelectLoadMore<Role>(queryRoles)
 const selectedRoleId = ref<number | undefined>(undefined)
 
-// 自动选择默认角色
+function isPublicRole(role: Role) {
+  return String(role.isOpen) === '1'
+}
+
+const publicRoles = computed(() => roles.value.filter((role: Role) => isPublicRole(role)))
+const privateRoles = computed(() => roles.value.filter((role: Role) => !isPublicRole(role)))
+
+// 自动选择默认角色：先找公共默认，再退公共第一个，最后才是私人角色
 watch(roles, (newRoles) => {
   if (!selectedRoleId.value && newRoles && newRoles.length > 0) {
-    const defaultRole = newRoles.find((r: Role) => String(r.isDefault) === '1' || String(r.isDefault) === 'true')
-    if (defaultRole) {
-      selectedRoleId.value = defaultRole.roleId
-    } else if (newRoles[0]) {
-      selectedRoleId.value = newRoles[0].roleId
+    const publicDefault = newRoles.find(
+      (r: Role) => isPublicRole(r) && (String(r.isDefault) === '1' || String(r.isDefault) === 'true')
+    )
+    const firstPublic = newRoles.find((r: Role) => isPublicRole(r))
+    const fallback = publicDefault || firstPublic || newRoles[0]
+    if (fallback) {
+      selectedRoleId.value = fallback.roleId
     }
   }
 }, { immediate: true })
@@ -250,6 +262,11 @@ function selectRole(role: Role) {
   rolePopoverOpen.value = false
 }
 
+function goManageMyRoles() {
+  rolePopoverOpen.value = false
+  router.push(ROUTES.MY_ROLES)
+}
+
 async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || sending.value || !selectedRoleId.value) return
@@ -287,22 +304,54 @@ async function sendMessage() {
           </a-button>
           <template #content>
             <div class="role-panel">
-              <button
-                v-for="role in roles"
-                :key="role.roleId"
-                type="button"
-                class="role-card"
-                :class="{ active: selectedRoleId === role.roleId }"
-                @click="selectRole(role)"
-              >
-                <a-avatar :size="36" :src="role.avatar" :style="{ flexShrink: 0, background: '#722ed1' }">
-                  {{ role.roleName?.charAt(0) }}
-                </a-avatar>
-                <div class="role-card-info">
-                  <div class="role-card-name">{{ role.roleName }}</div>
-                  <div v-if="role.roleDesc" class="role-card-desc">{{ role.roleDesc }}</div>
-                </div>
-                <CheckOutlined v-if="selectedRoleId === role.roleId" class="role-card-check" />
+              <div v-if="publicRoles.length" class="role-group">
+                <div class="role-group-title">{{ t('chat.publicGroup') }}</div>
+                <button
+                  v-for="role in publicRoles"
+                  :key="role.roleId"
+                  type="button"
+                  class="role-card"
+                  :class="{ active: selectedRoleId === role.roleId }"
+                  @click="selectRole(role)"
+                >
+                  <a-avatar :size="36" :src="role.avatar" :style="{ flexShrink: 0, background: '#722ed1' }">
+                    {{ role.roleName?.charAt(0) }}
+                  </a-avatar>
+                  <div class="role-card-info">
+                    <div class="role-card-name">
+                      {{ role.roleName }}
+                      <span class="role-public-tag">{{ t('chat.publicTag') }}</span>
+                    </div>
+                    <div v-if="role.roleDesc" class="role-card-desc">{{ role.roleDesc }}</div>
+                  </div>
+                  <CheckOutlined v-if="selectedRoleId === role.roleId" class="role-card-check" />
+                </button>
+              </div>
+
+              <div v-if="privateRoles.length" class="role-group">
+                <div class="role-group-title">{{ t('chat.myGroup') }}</div>
+                <button
+                  v-for="role in privateRoles"
+                  :key="role.roleId"
+                  type="button"
+                  class="role-card"
+                  :class="{ active: selectedRoleId === role.roleId }"
+                  @click="selectRole(role)"
+                >
+                  <a-avatar :size="36" :src="role.avatar" :style="{ flexShrink: 0, background: '#722ed1' }">
+                    {{ role.roleName?.charAt(0) }}
+                  </a-avatar>
+                  <div class="role-card-info">
+                    <div class="role-card-name">{{ role.roleName }}</div>
+                    <div v-if="role.roleDesc" class="role-card-desc">{{ role.roleDesc }}</div>
+                  </div>
+                  <CheckOutlined v-if="selectedRoleId === role.roleId" class="role-card-check" />
+                </button>
+              </div>
+
+              <button type="button" class="role-manage-link" @click="goManageMyRoles">
+                <EditOutlined />
+                {{ t('chat.manageMyRoles') }}
               </button>
             </div>
           </template>
@@ -521,6 +570,50 @@ async function sendMessage() {
   max-height: 400px;
   overflow-y: auto;
   padding: 6px;
+}
+
+.role-group + .role-group {
+  margin-top: 4px;
+}
+
+.role-group-title {
+  padding: 6px 12px 4px;
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
+}
+
+.role-public-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--ant-color-primary-bg);
+  color: var(--ant-color-primary);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 18px;
+  vertical-align: 1px;
+}
+
+.role-manage-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: none;
+  border-top: 1px solid var(--ant-color-border-secondary);
+  background: none;
+  color: var(--ant-color-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.role-manage-link:hover {
+  background: var(--ant-color-fill-tertiary);
 }
 
 /* 原来是 div，现在是真正的 button，重置原生按钮外观（宽度/字体/边框），视觉保持不变 */

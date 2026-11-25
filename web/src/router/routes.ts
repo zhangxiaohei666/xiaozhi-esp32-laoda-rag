@@ -9,6 +9,7 @@ export const ROUTES = {
   DASHBOARD: '/dashboard',
   DEVICE: '/device',
   ROLE: '/role',
+  MY_ROLES: '/my-roles',
   TEMPLATE: '/template',
   CHAT: '/chat',
   CONFIG_MODEL: '/config/model',

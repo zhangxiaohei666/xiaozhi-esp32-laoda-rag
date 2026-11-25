@@ -13,6 +13,15 @@ public interface RoleConvert {
 
     RoleResp toResp(RoleProjection projection);
 
+    /** "我的角色"列表用：BO 已经是补齐默认值后的读模型，直接转出参 */
+    @Mapping(target = "modelName", ignore = true)
+    @Mapping(target = "modelProvider", ignore = true)
+    @Mapping(target = "ttsProvider", ignore = true)
+    @Mapping(target = "totalDevice", ignore = true)
+    @Mapping(target = "createTime", ignore = true)
+    @Mapping(target = "updateTime", ignore = true)
+    RoleResp toResp(RoleBO roleBO);
+
     /**
      * 读路径的 DO → BO：该列为 NULL 的历史行补默认值。
      * <p>默认值本身由领域模型持有，这里只引用，不再写第二份字面量——写路径经聚合根补的是同一份，

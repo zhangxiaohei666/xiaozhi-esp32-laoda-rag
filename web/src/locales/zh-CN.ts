@@ -417,6 +417,7 @@ export default {
     setAsDefaultFailed: '设置失败',
     deleteRoleSuccess: '删除成功',
     deleteRoleFailed: '删除失败',
+    updateRoleFailed: '更新失败',
     createRoleSuccess: '创建成功',
     updateRoleSuccess: '更新成功',
     sessionSettings: '会话设置',
@@ -460,6 +461,16 @@ export default {
     sttHotwords: '识别热词',
     sttHotwordsPlaceholder: '每行一个，如：\n泽宇\n小米音箱 11',
     sttHotwordsTip: '人名、品牌、设备名这类容易识别错的词。每行一个，可在词后加空格与权重（1-11，不填为10），最多100条。仅部分识别服务支持。',
+
+    // 公共角色
+    publicRole: '公共',
+    openToAll: '开放给全体用户',
+    openToAllTip: '开启后所有用户可见、可选；关闭后新人不可见、不能绑定，已绑定的设备继续使用。',
+    publicRoleEditTip: '这是公共角色，修改人设/音色会立即影响所有正在使用它的用户。',
+    defaultPublicCannotClose: '公共默认角色必须保持开放',
+    publicRoleCannotDelete: '公共角色不可删除，请先关闭开放开关',
+    openSuccess: '已开放给全体用户',
+    closeSuccess: '已关闭开放，已绑定设备不受影响',
   },
 
   template: {
@@ -868,6 +879,35 @@ export default {
     retry: '重新加载',
   },
 
+  myRole: {
+    title: '我的角色',
+    subtitle: '公共角色可直接使用；也可以创建一个专属助手，只改它的人设和音色。',
+    create: '新建我的角色',
+    edit: '编辑我的角色',
+    createFirst: '创建第一个角色',
+    empty: '还没有自己的角色',
+    emptyTip: '自建角色不会影响公共角色，随时可以改名、改提示词或换音色。',
+    name: '角色名称',
+    namePlaceholder: '例如：我的学习助手',
+    nameRequired: '请输入角色名称',
+    nameTooLong: '角色名称不能超过50个字符',
+    prompt: '角色提示词',
+    promptPlaceholder: '描述这个助手的身份、语气和回答方式，例如：你是一个耐心的算法辅导老师……',
+    promptTooLong: '提示词不能超过4000个字符',
+    voice: '音色',
+    voicePlaceholder: '选择一个音色',
+    voiceTip: '只开放精选音色；不选则跟随公共默认角色。',
+    followDefault: '跟随公共默认音色',
+    followDefaultWithName: '跟随公共默认音色（{name}）',
+    noPrompt: '还没有填写提示词',
+    legacyVoiceHint: '当前音色已不在精选清单里，保存后将改为跟随公共默认音色。',
+    createSuccess: '角色已创建',
+    updateSuccess: '角色已更新',
+    deleteSuccess: '角色已删除',
+    deleteTitle: '删除角色',
+    deleteContent: '确定删除“{name}”吗？仍绑定设备时需要先把设备改绑到其他角色。',
+  },
+
   router: {
     title: {
       login: '登录',
@@ -878,6 +918,7 @@ export default {
       device: '设备管理',
       message: '对话管理',
       role: '角色配置',
+      myRoles: '我的角色',
       authRole: '权限角色',
       template: '模板管理',
       modelConfig: '模型配置',
@@ -971,6 +1012,10 @@ export default {
 
   chat: {
     selectRole: '选择角色',
+    publicGroup: '公共角色',
+    myGroup: '我的角色',
+    publicTag: '公共',
+    manageMyRoles: '管理我的角色',
     noRole: '无角色',
     newChat: '新建对话',
     history: '历史记录',

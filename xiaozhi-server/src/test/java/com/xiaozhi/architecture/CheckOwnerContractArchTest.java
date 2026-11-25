@@ -62,6 +62,8 @@ class CheckOwnerContractArchTest {
         Map.entry("AuthRoleController#assignPermissions", "后台权限角色是全局资源，只按权限键"),
         Map.entry("AuthRoleController#getPermissionConfig", "后台权限角色是全局资源，只按权限键"),
         Map.entry("ConversationController#rename", "ConversationService.checkAccess"),
+        Map.entry("RoleController#deleteMyRole", "MyRoleAppService.loadOwnedPrivateRole（先判公共后判归属）"),
+        Map.entry("RoleController#updateMyRole", "MyRoleAppService.loadOwnedPrivateRole（先判公共后判归属）"),
         Map.entry("WebChatController#close", "WebChatAppService.closeSession（进程内会话按开它的用户判）"));
 
     private static JavaClasses xiaozhiClasses;

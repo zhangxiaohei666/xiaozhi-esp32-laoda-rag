@@ -23,6 +23,7 @@ export default {
   agent: '/agent',
   role: {
     root: '/role',
+    my: '/role/my',
     testVoice: '/role/testVoice',
     sherpaVoices: '/role/sherpaVoices',
     localStt: '/role/localStt',
@@ -36,6 +37,7 @@ export default {
   config: {
     root: '/config',
     test: '/config/test',
+    voiceOptions: '/config/voice-options',
   },
   mcpTool: {
     toggleRoleTool: '/mcpTool/role',         // PATCH /mcpTool/role/{roleId}/tools

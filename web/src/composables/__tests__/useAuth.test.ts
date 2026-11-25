@@ -14,8 +14,8 @@ const userStoreMock = vi.hoisted(() => ({
   setToken: vi.fn(),
   clearUserInfo: vi.fn(),
   clearToken: vi.fn(),
-  hasPermission: vi.fn(() => false),
-  hasAnyPermission: vi.fn(() => false),
+  hasPermission: vi.fn((_permission: string) => false),
+  hasAnyPermission: vi.fn((_permissions: string[]) => false),
 }))
 
 const userApiMock = vi.hoisted(() => ({
@@ -56,6 +56,8 @@ describe('useAuth', () => {
     localStorage.clear()
     routerMock.currentRoute.value.query = {}
     routerMock.resolve.mockReturnValue({ meta: {} })
+    userStoreMock.hasPermission.mockReturnValue(true)
+    userStoreMock.hasAnyPermission.mockReturnValue(true)
   })
 
   it('勾选记住我只把用户名写进 localStorage，不落任何形式的密码', async () => {
@@ -91,12 +93,14 @@ describe('useAuth', () => {
     expect(localStorage.getItem('rememberMe')).toBeNull()
   })
 
-  it('管理员落地仪表盘，普通用户落地设备列表', async () => {
+  it('有仪表盘权限落仪表盘，只有设备权限时落设备列表', async () => {
+    userStoreMock.hasPermission.mockImplementation((permission: string) => permission === 'system:dashboard')
     userApiMock.login.mockResolvedValue(loginResponse('1'))
     const { login } = useAuth()
     await login({ username: 'admin', password: 'pwd' })
     expect(routerMock.push).toHaveBeenLastCalledWith('/dashboard')
 
+    userStoreMock.hasPermission.mockImplementation((permission: string) => permission === 'system:device')
     userApiMock.login.mockResolvedValue(loginResponse('0'))
     await login({ username: 'user', password: 'pwd' })
     expect(routerMock.push).toHaveBeenLastCalledWith('/device')

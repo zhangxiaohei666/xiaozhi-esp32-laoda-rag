@@ -38,6 +38,7 @@ export interface Role {
   modelProvider?: string
   ttsProvider?: string
   isDefault?: string | number // 服务器返回字符串 '1' 或 '0'，前端可能转为数字
+  isOpen?: string | number // 公共角色开关：'1'/'0'，计算字段不随附
   totalDevice?: number
   ttsPitch?: number
   ttsSpeed?: number
@@ -89,6 +90,7 @@ export interface RoleFormData {
   roleDesc?: string
   avatar?: string
   isDefault: boolean | number | string // 支持布尔值、数字和字符串（提交时转为 '1' 或 '0'）
+  isOpen?: boolean // 管理员开放开关；普通用户永远不会提交
   state?: string
   modelType: RoleModelType
   modelId?: number
@@ -136,4 +138,39 @@ export interface RoleDefaults {
   inactiveTimeoutSeconds?: number
   ttsPitch: number
   ttsSpeed: number
+}
+
+/** 普通用户"我的角色"：只有三个可编辑字段，其余由后端继承公共默认 */
+export interface MyRole {
+  roleId: number
+  roleName: string
+  roleDesc?: string
+  voiceName?: string
+  ttsId?: number
+}
+
+export interface MyRoleFormData {
+  roleId?: number
+  roleName: string
+  roleDesc?: string
+  voiceName?: string
+}
+
+export interface VoiceOptionItem {
+  value: string
+  label: string
+}
+
+export interface VoiceOptionGroup {
+  ttsId: number | null
+  provider: string
+  providerLabel: string
+  voices: VoiceOptionItem[]
+}
+
+/** GET /api/config/voice-options：10 个精选音色，按 provider 分组 */
+export interface VoiceOptions {
+  defaultTtsId?: number | null
+  defaultVoiceName?: string
+  groups: VoiceOptionGroup[]
 }

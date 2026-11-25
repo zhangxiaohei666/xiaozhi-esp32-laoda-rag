@@ -119,6 +119,15 @@ public class Role {
         signals.add(DomainSignal.UPDATED);
     }
 
+    /** 管理员开放/关闭公共角色；关闭不等于停用，已绑定设备仍可继续使用 */
+    public void changeOpen(boolean open) {
+        if (this.isOpen == open) {
+            return;
+        }
+        this.isOpen = open;
+        signals.add(DomainSignal.UPDATED);
+    }
+
     /** 禁用角色，前端「删除智能体」走这里，记录保留 */
     public void disable() {
         this.state = STATE_DISABLED;

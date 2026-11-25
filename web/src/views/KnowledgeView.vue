@@ -478,7 +478,7 @@ async function handleIngest() {
     } else {
       message.error(created.message || t('knowledge.ingestFailed'))
     }
-  } catch (e) {
+  } catch {
     // 传输层错误由 request.ts 拦截器统一提示，这里只兜底
     message.error(t('knowledge.ingestFailed'))
   } finally {

@@ -1,6 +1,6 @@
 import { http } from './request'
 import api from './api'
-import type { Role, RoleDefaults, RoleQueryParams, RoleFormData, TestVoiceParams, TestVoiceResult, LocalStt } from '@/types/role'
+import type { Role, RoleDefaults, RoleQueryParams, RoleFormData, TestVoiceParams, TestVoiceResult, LocalStt, MyRole, MyRoleFormData } from '@/types/role'
 import type { SystemGlobalToolSummary } from '@/types/mcpTool'
 
 /**
@@ -53,6 +53,28 @@ export function updateRole(data: RoleSubmitData) {
  */
 export function deleteRole(roleId: number) {
   return http.delete(`${api.role.root}/${roleId}`)
+}
+
+// ===================== 我的角色（普通用户） =====================
+
+/** 当前用户自建的私人角色；不要求角色管理权限 */
+export function queryMyRoles() {
+  return http.getList<MyRole>(api.role.my)
+}
+
+export function addMyRole(data: MyRoleFormData) {
+  return http.post<Role>(api.role.my, data)
+}
+
+export function updateMyRole(data: MyRoleFormData) {
+  const { roleId, ...payload } = data
+  assertRoleId(roleId as number)
+  return http.put<Role>(`${api.role.my}/${roleId}`, payload)
+}
+
+export function deleteMyRole(roleId: number) {
+  assertRoleId(roleId)
+  return http.delete(`${api.role.my}/${roleId}`)
 }
 
 /**

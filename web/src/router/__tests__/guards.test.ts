@@ -5,8 +5,8 @@ import { message } from 'ant-design-vue'
 const userStoreMock = vi.hoisted(() => ({
   token: '',
   isAdmin: false,
-  hasPermission: vi.fn(() => true),
-  hasAnyPermission: vi.fn(() => true),
+  hasPermission: vi.fn((_permission: string) => true),
+  hasAnyPermission: vi.fn((_permissions: string[]) => true),
   setUserInfo: vi.fn(),
   setPermissions: vi.fn(),
   setAuthRole: vi.fn(),
@@ -54,6 +54,8 @@ describe('router guards', () => {
     sessionStorage.clear()
     userStoreMock.token = ''
     userStoreMock.isAdmin = false
+    userStoreMock.hasPermission.mockReturnValue(true)
+    userStoreMock.hasAnyPermission.mockReturnValue(true)
   })
 
   it('未登录访问深链时把完整路径（含 query）编码进 redirect', () => {
@@ -66,11 +68,12 @@ describe('router guards', () => {
     expect(decodeURIComponent(String(next.mock.calls[0]?.[0]).split('redirect=')[1] ?? '')).toBe('/user?id=5')
   })
 
-  it('已登录的普通用户访问登录页时落到设备列表而不是仪表盘', () => {
+  it('已登录但没有仪表盘权限的普通用户访问登录页时落到设备列表', () => {
     const hooks = installGuards()
     const next = vi.fn()
     userStoreMock.token = 'token-1'
     userStoreMock.isAdmin = false
+    userStoreMock.hasPermission.mockImplementation((permission: string) => permission === 'system:device')
 
     hooks.beforeEach?.call(undefined, route('/login'), route('/'), next)
 

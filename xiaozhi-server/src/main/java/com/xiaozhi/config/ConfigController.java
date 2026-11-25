@@ -2,6 +2,7 @@ package com.xiaozhi.config;
 
 import com.xiaozhi.server.web.BaseController;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.xiaozhi.common.annotation.AuditLog;
 import com.xiaozhi.common.annotation.CheckOwner;
@@ -11,6 +12,7 @@ import com.xiaozhi.common.model.req.ConfigPageReq;
 import com.xiaozhi.common.model.req.ConfigTestReq;
 import com.xiaozhi.common.model.req.ConfigUpdateReq;
 import com.xiaozhi.common.model.resp.ConfigResp;
+import com.xiaozhi.common.model.resp.VoiceOptionsResp;
 import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.web.ApiResponse;
 import com.xiaozhi.security.CurrentUser;
@@ -39,6 +41,21 @@ public class ConfigController extends BaseController {
 
     @Resource
     private ConfigTestAppService configTestAppService;
+
+    @Resource
+    private VoiceOptionAppService voiceOptionAppService;
+
+    /**
+     * 普通用户建角色时可选的音色清单（10 个精选）。
+     * <p>只校验登录，不要求配置管理权限：用户看不到 admin 的配置，但可以用白名单里的音色。
+     */
+    @GetMapping("/voice-options")
+    @ResponseBody
+    @SaCheckLogin
+    @Operation(summary = "我的角色可选音色", description = "返回精选音色分组与公共默认音色，不包含任何凭据")
+    public ApiResponse<VoiceOptionsResp> voiceOptions() {
+        return ApiResponse.success(voiceOptionAppService.options());
+    }
 
     /**
      * 配置查询

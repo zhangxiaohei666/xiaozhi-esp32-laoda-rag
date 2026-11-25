@@ -108,6 +108,57 @@ public class RoleServiceImpl implements RoleService {
     }
 
     @Override
+    public List<RoleBO> listPrivateBO(Integer userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return roleMapper.selectList(new LambdaQueryWrapper<RoleDO>()
+                .eq(RoleDO::getUserId, userId)
+                .eq(RoleDO::getIsOpen, "0")
+                .orderByDesc(RoleDO::getRoleId))
+            .stream()
+            .map(roleConvert::toBO)
+            .toList();
+    }
+
+    @Override
+    public boolean existsRoleName(Integer userId, String roleName, Integer excludeRoleId) {
+        if (userId == null || roleName == null || roleName.isBlank()) {
+            return false;
+        }
+        LambdaQueryWrapper<RoleDO> query = new LambdaQueryWrapper<RoleDO>()
+            .eq(RoleDO::getUserId, userId)
+            .eq(RoleDO::getRoleName, roleName.trim());
+        if (excludeRoleId != null) {
+            query.ne(RoleDO::getRoleId, excludeRoleId);
+        }
+        return roleMapper.selectCount(query) > 0;
+    }
+
+    @Override
+    public boolean existsPublicRoleName(String roleName, Integer excludeRoleId) {
+        if (roleName == null || roleName.isBlank()) {
+            return false;
+        }
+        LambdaQueryWrapper<RoleDO> query = new LambdaQueryWrapper<RoleDO>()
+            .eq(RoleDO::getUserId, ADMIN_USER_ID)
+            .eq(RoleDO::getIsOpen, "1")
+            .eq(RoleDO::getRoleName, roleName.trim());
+        if (excludeRoleId != null) {
+            query.ne(RoleDO::getRoleId, excludeRoleId);
+        }
+        return roleMapper.selectCount(query) > 0;
+    }
+
+    @Override
+    public long countOpenPublic() {
+        return roleMapper.selectCount(new LambdaQueryWrapper<RoleDO>()
+            .eq(RoleDO::getUserId, ADMIN_USER_ID)
+            .eq(RoleDO::getIsOpen, "1")
+            .eq(RoleDO::getState, Role.STATE_ENABLED));
+    }
+
+    @Override
     public long countByModelId(Integer modelId) {
         if (modelId == null) {
             return 0;

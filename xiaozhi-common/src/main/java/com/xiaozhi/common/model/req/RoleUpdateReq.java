@@ -90,4 +90,7 @@ public class RoleUpdateReq {
     @Schema(description = "是否默认角色(1是 0否)")
     private String isDefault;
 
+    @Schema(description = "是否开放给全体用户；不传表示本次不改")
+    private Boolean isOpen;
+
 }

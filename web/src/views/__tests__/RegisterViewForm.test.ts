@@ -162,8 +162,8 @@ describe('RegisterView 提交注册', () => {
     vi.clearAllMocks()
   })
 
-  // 钉住表单字段到 register 入参的映射，将来加字段时不会漏传
-  it('把表单里的八个字段原样交给 register', async () => {
+  // 钉住表单字段到 register 入参的映射，将来加字段时不会漏传；手机号不是注册必填项
+  it('把表单里的七个字段原样交给 register', async () => {
     authMock.register.mockResolvedValue(true)
     const { view } = mountView(vi.fn().mockResolvedValue(undefined))
     fillForm(view)
@@ -174,7 +174,6 @@ describe('RegisterView 提交注册', () => {
       name: 'Joey',
       username: 'joey',
       email: 'joey@example.com',
-      tel: '13800138000',
       password: 'secret123',
       confirmPassword: 'secret123',
       verifyCode: '654321',

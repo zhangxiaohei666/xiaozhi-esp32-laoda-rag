@@ -2,6 +2,7 @@ import { http } from './request'
 import api from './api'
 import type { Config, ConfigQueryParams } from '@/types/config'
 import type { PlatformConfig } from '@/types/agent'
+import type { VoiceOptions } from '@/types/role'
 
 /**
  * 查询配置列表
@@ -40,6 +41,13 @@ export function deleteConfig(configId: number, confirmStorageSwitch = false) {
  */
 export function testConfig(data: Partial<Config>) {
   return http.post(api.config.test, data)
+}
+
+/**
+ * 普通用户建角色可选音色（10 个精选，不返回任何凭据）
+ */
+export function getVoiceOptions() {
+  return http.get<VoiceOptions>(api.config.voiceOptions)
 }
 
 /**
