@@ -1,6 +1,7 @@
 package com.xiaozhi.security.ownership;
 
 import com.xiaozhi.common.exception.ResourceNotFoundException;
+import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.model.bo.ConfigBO;
 import com.xiaozhi.common.model.bo.DeviceBO;
 import com.xiaozhi.common.model.bo.MessageBO;
@@ -30,6 +31,27 @@ public class OwnershipConfig {
                     throw new ResourceNotFoundException("角色不存在");
                 }
                 requireOwner(role.getUserId(), userId, "角色不归属当前用户");
+            }
+        };
+    }
+
+    /**
+     * 绑定 / 聊天路径用的检查器：自己的角色，或管理员开放且启用的公共角色。
+     * <p>公共角色对普通用户仍然只读——改人设、改音色、改 MCP 工具、删除都还走 {@code role}。
+     */
+    @Bean
+    public OwnershipChecker rolePublicOwnershipChecker(RoleService roleService) {
+        return new AbstractOwnershipChecker("rolePublic") {
+            @Override
+            public void check(Object resourceId, Integer userId) {
+                RoleBO role = roleService.getBO(toIntId(resourceId, "roleId"));
+                if (role == null) {
+                    throw new ResourceNotFoundException("角色不存在");
+                }
+                if (Objects.equals(role.getUserId(), userId) || role.isPublicRole()) {
+                    return;
+                }
+                throw new UnauthorizedException("角色不归属当前用户");
             }
         };
     }

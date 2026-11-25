@@ -82,8 +82,50 @@ class WebChatControllerOwnershipTest {
         }
     }
 
+    @Test
+    void openAcceptsPublicRoleForOtherUser() throws Exception {
+        RoleBO publicRole = role(1);
+        publicRole.setIsOpen("1");
+        publicRole.setState("1");
+        when(roleService.getBO(ROLE_ID)).thenReturn(publicRole);
+        when(joinPoint.getSignature()).thenReturn(methodSignature);
+        when(methodSignature.getMethod()).thenReturn(openEndpoint());
+        when(joinPoint.getArgs()).thenReturn(new Object[]{ROLE_ID, "session-1"});
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getLoginId).thenReturn(OTHER_USER_ID);
+
+            OwnershipAspect aspect = newAspect();
+
+            // 公共牢大/雪峰：普通用户拿 roleId 开聊天必须放行，否则选公共角色就 403
+            assertThatCode(() -> aspect.checkOwner(joinPoint)).doesNotThrowAnyException();
+        }
+    }
+
+    @Test
+    void openRejectsClosedPublicRole() throws Exception {
+        RoleBO closedRole = role(1);
+        closedRole.setIsOpen("0");
+        closedRole.setState("1");
+        when(roleService.getBO(ROLE_ID)).thenReturn(closedRole);
+        when(joinPoint.getSignature()).thenReturn(methodSignature);
+        when(methodSignature.getMethod()).thenReturn(openEndpoint());
+        when(joinPoint.getArgs()).thenReturn(new Object[]{ROLE_ID, "session-1"});
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getLoginId).thenReturn(OTHER_USER_ID);
+
+            OwnershipAspect aspect = newAspect();
+
+            assertThatThrownBy(() -> aspect.checkOwner(joinPoint))
+                .isInstanceOf(UnauthorizedException.class)
+                .hasMessage("角色不归属当前用户");
+        }
+    }
+
     private OwnershipAspect newAspect() {
-        OwnershipAspect aspect = new OwnershipAspect(List.of(new OwnershipConfig().roleOwnershipChecker(roleService)));
+        OwnershipAspect aspect = new OwnershipAspect(
+            List.of(new OwnershipConfig().rolePublicOwnershipChecker(roleService)));
         ReflectionTestUtils.setField(aspect, "userService", userService);
         return aspect;
     }

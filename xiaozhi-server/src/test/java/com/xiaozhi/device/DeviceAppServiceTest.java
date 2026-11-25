@@ -190,7 +190,7 @@ class DeviceAppServiceTest {
     void createBindsDeviceLocatedByCodeAndInvalidatesRemainingCodes() {
         when(verifyCodeService.findValidByCode("123456")).thenReturn(verifyCode("toy-v1"));
         when(deviceRepository.findById(DEVICE_ID)).thenReturn(Optional.empty());
-        when(roleService.getDefaultOrFirstBO(7)).thenReturn(role(3, "小智"));
+        when(roleService.getPublicDefaultBO()).thenReturn(role(3, "小智"));
 
         DeviceResp result = deviceAppService.create(createReq("123456"), 7);
 
@@ -201,6 +201,21 @@ class DeviceAppServiceTest {
         assertThat(captor.getValue().getRoleId()).isEqualTo(3);
         // 绑定用掉的码必须立即失效，否则同一个 6 位码在有效期内还能被继续试
         verify(verifyCodeService).deleteByDeviceId(DEVICE_ID);
+    }
+
+    @Test
+    void createAlwaysBindsThePublicDefaultRole() {
+        when(verifyCodeService.findValidByCode("123456")).thenReturn(verifyCode("toy-v1"));
+        when(deviceRepository.findById(DEVICE_ID)).thenReturn(Optional.empty());
+        when(roleService.getPublicDefaultBO()).thenReturn(role(3, "牢大"));
+
+        deviceAppService.create(createReq("123456"), 7);
+
+        ArgumentCaptor<Device> captor = ArgumentCaptor.forClass(Device.class);
+        verify(deviceRepository).save(captor.capture());
+        assertThat(captor.getValue().getRoleId()).isEqualTo(3);
+        // 用户有几个私人角色都不影响：新设备兜底只认公共默认
+        verify(roleService, never()).getDefaultOrFirstBO(any());
     }
 
     @Test
@@ -218,7 +233,7 @@ class DeviceAppServiceTest {
     void scanBindCreatesDeviceWhenUnboundAndRecentlyOnline() {
         when(deviceRepository.findById(DEVICE_ID)).thenReturn(Optional.empty());
         when(verifyCodeService.findValid(null, DEVICE_ID, null)).thenReturn(verifyCode("toy-v1"));
-        when(roleService.getDefaultOrFirstBO(7)).thenReturn(role(3, "小智"));
+        when(roleService.getPublicDefaultBO()).thenReturn(role(3, "小智"));
 
         // 贴纸上是大写 '-' 分隔的 MAC，应归一化为设备上报的小写冒号格式
         DeviceResp result = deviceAppService.scanBind(scanBindReq("AA-BB-CC-DD-EE-FF"), 7);
@@ -281,7 +296,7 @@ class DeviceAppServiceTest {
     void createReturnsEveryResponseFieldFromTheAggregate() {
         when(verifyCodeService.findValidByCode("123456")).thenReturn(verifyCode("toy-v1"));
         when(deviceRepository.findById(DEVICE_ID)).thenReturn(Optional.empty());
-        when(roleService.getDefaultOrFirstBO(7)).thenReturn(role(3, "小智"));
+        when(roleService.getPublicDefaultBO()).thenReturn(role(3, "小智"));
         stampOnSave(CREATED_AT, CREATED_AT);
 
         DeviceResp result = deviceAppService.create(createReq("123456"), 7);
@@ -313,7 +328,7 @@ class DeviceAppServiceTest {
     void scanBindReturnsEveryResponseFieldFromTheAggregate() {
         when(deviceRepository.findById(DEVICE_ID)).thenReturn(Optional.empty());
         when(verifyCodeService.findValid(null, DEVICE_ID, null)).thenReturn(verifyCode("toy-v1"));
-        when(roleService.getDefaultOrFirstBO(7)).thenReturn(role(3, "小智"));
+        when(roleService.getPublicDefaultBO()).thenReturn(role(3, "小智"));
         stampOnSave(CREATED_AT, CREATED_AT);
 
         DeviceResp result = deviceAppService.scanBind(scanBindReq(DEVICE_ID), 7);

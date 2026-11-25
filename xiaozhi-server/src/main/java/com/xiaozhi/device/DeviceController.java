@@ -80,7 +80,7 @@ public class DeviceController extends BaseController {
     @SaCheckPermission("system:device:api:batch-update")
     @AuditLog(module = "设备管理", operation = "批量更新设备")
     @CheckOwner(resource = "device", id = "#param.deviceIds != null ? #param.deviceIds.split(',') : null")
-    @CheckOwner(resource = "role", id = "#param.roleId")
+    @CheckOwner(resource = "rolePublic", id = "#param.roleId")
     @Operation(summary = "批量更新设备", description = "批量更新多个设备的角色")
     public ApiResponse<DeviceBatchUpdateResp> batchUpdate(@Valid @RequestBody DeviceBatchUpdateReq param) {
         DeviceBatchUpdateResp data = deviceAppService.batchUpdate(param);
@@ -118,7 +118,7 @@ public class DeviceController extends BaseController {
     @ResponseBody
     @SaCheckPermission("system:device:api:update")
     @CheckOwner(resource = "device", id = "#deviceId")
-    @CheckOwner(resource = "role", id = "#param.roleId")
+    @CheckOwner(resource = "rolePublic", id = "#param.roleId")
     @AuditLog(module = "设备管理", operation = "更新设备")
     @Operation(summary = "更新设备信息", description = "更新设备名称、角色、功能列表等信息")
     public ApiResponse<DeviceResp> update(@PathVariable String deviceId, @Valid @RequestBody DeviceUpdateReq param) {

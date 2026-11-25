@@ -40,6 +40,8 @@ public class Role {
     private String roleName;
     private String roleDesc;
     private String state;
+    /** 公共角色开放标记：只有 admin 名下的行可能为 true，删除守卫与列表分组读它 */
+    private boolean isOpen;
     private boolean isDefault;
     private int inactiveTimeoutSeconds;
 
@@ -56,7 +58,7 @@ public class Role {
 
     /** 从持久层重建聚合根（Repository 专用） */
     public Role(Integer roleId, Integer userId, String avatar, String roleName, String roleDesc,
-                String state, boolean isDefault, Integer inactiveTimeoutSeconds,
+                String state, boolean isOpen, boolean isDefault, Integer inactiveTimeoutSeconds,
                 LlmConfig llmConfig, VoiceConfig voiceConfig,
                 AudioConfig audioConfig,
                 LocalDateTime createTime, LocalDateTime updateTime) {
@@ -66,6 +68,7 @@ public class Role {
         this.roleName = roleName;
         this.roleDesc = roleDesc;
         this.state = state;
+        this.isOpen = isOpen;
         this.isDefault = isDefault;
         this.inactiveTimeoutSeconds = inactiveTimeoutSeconds != null
                 ? inactiveTimeoutSeconds : RoleBO.DEFAULT_INACTIVE_TIMEOUT_SECONDS;
@@ -77,12 +80,12 @@ public class Role {
         this.updateTime = updateTime;
     }
 
-    /** 工厂方法：创建新角色 */
+    /** 工厂方法：创建新角色。新建的角色一律不开放（开放只能由管理员在管理端开关上打开） */
     public static Role newRole(Integer userId, String roleName, String roleDesc, String avatar,
                                LlmConfig llmConfig, VoiceConfig voiceConfig,
                                AudioConfig audioConfig,
                                boolean isDefault, Integer inactiveTimeoutSeconds) {
-        Role role = new Role(null, userId, avatar, roleName, roleDesc, "1", isDefault,
+        Role role = new Role(null, userId, avatar, roleName, roleDesc, "1", false, isDefault,
                 inactiveTimeoutSeconds,
                 llmConfig, voiceConfig, audioConfig,
                 null, null);

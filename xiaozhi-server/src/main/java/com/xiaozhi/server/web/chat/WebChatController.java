@@ -43,7 +43,7 @@ public class WebChatController {
      */
     @PostMapping("/open")
     @SaCheckPermission("system:chat:api:open")
-    @CheckOwner(resource = "role", id = "#roleId")
+    @CheckOwner(resource = "rolePublic", id = "#roleId")
     @Operation(summary = "开启聊天会话", description = "创建或续接 Web 聊天会话并返回 sessionId")
     public ApiResponse<ChatSessionOpenedResp> open(@RequestParam Integer roleId,
                                      @RequestParam(required = false) String sessionId) {

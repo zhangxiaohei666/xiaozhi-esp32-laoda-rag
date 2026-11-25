@@ -16,6 +16,7 @@ import com.xiaozhi.role.domain.vo.LlmConfig;
 import com.xiaozhi.role.domain.vo.VoiceConfig;
 import com.xiaozhi.role.service.RoleService;
 import com.xiaozhi.summary.service.SummaryService;
+import com.xiaozhi.user.service.UserService;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,8 +51,18 @@ public class RoleAppService {
     @Resource
     private ConversationService conversationService;
 
+    @Resource
+    private UserService userService;
+
+    /** 公共角色的所有者：V1 初始化的那个管理员；公共行只能关闭，不能删除 */
+    private static final int ADMIN_USER_ID = 1;
+
     public PageResult<RoleResp> page(RolePageReq req, Integer userId) {
         RolePageReq r = req == null ? new RolePageReq() : req;
+        // RolePageReq.state 没有默认值，不传就不过滤停用角色；非管理员只应看到启用角色（公共行也按此收窄）
+        if (!userService.isAdmin(userId)) {
+            r.setState(Role.STATE_ENABLED);
+        }
         return roleService.page(r.getPageNo(), r.getPageSize(),
                 r.getRoleId(), r.getRoleName(), r.getIsDefault(), r.getState(), userId)
             .map(roleConvert::toResp);
@@ -102,6 +113,12 @@ public class RoleAppService {
      */
     @Transactional
     public void delete(Integer roleId) {
+        // 公共角色删一行等于毁全员：允许关闭开放 / 停用，但不允许删除
+        roleRepository.findById(roleId).ifPresent(role -> {
+            if (Integer.valueOf(ADMIN_USER_ID).equals(role.getUserId()) && role.isOpen()) {
+                throw new IllegalStateException("公共角色不可删除，请先关闭开放开关");
+            }
+        });
         long boundDevices = countBoundDevices(roleId);
         if (boundDevices > 0) {
             throw new IllegalStateException("该角色仍绑定 " + boundDevices + " 台设备，请先将设备改绑到其他角色");

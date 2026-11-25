@@ -30,7 +30,7 @@ public class RoleConverter {
         return new Role(
                 d.getRoleId(), d.getUserId(), d.getAvatar(),
                 d.getRoleName(), d.getRoleDesc(), d.getState(),
-                "1".equals(d.getIsDefault()), d.getInactiveTimeoutSeconds(),
+                "1".equals(d.getIsOpen()), "1".equals(d.getIsDefault()), d.getInactiveTimeoutSeconds(),
                 llm, voice, audio,
                 d.getCreateTime(), d.getUpdateTime()
         );
@@ -46,6 +46,7 @@ public class RoleConverter {
         d.setRoleDesc(r.getRoleDesc());
         d.setState(r.getState());
         d.setIsDefault(r.isDefault() ? "1" : "0");
+        d.setIsOpen(r.isOpen() ? "1" : "0");
         d.setInactiveTimeoutSeconds(r.getInactiveTimeoutSeconds());
 
         LlmConfig llm = r.getLlmConfig();
@@ -86,6 +87,7 @@ public class RoleConverter {
         bo.setRoleDesc(r.getRoleDesc());
         bo.setState(r.getState());
         bo.setIsDefault(r.isDefault() ? "1" : "0");
+        bo.setIsOpen(r.isOpen() ? "1" : "0");
         bo.setInactiveTimeoutSeconds(r.getInactiveTimeoutSeconds());
 
         LlmConfig llm = r.getLlmConfig();

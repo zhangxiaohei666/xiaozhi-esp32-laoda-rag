@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -71,24 +72,69 @@ class RoleServiceImplTest {
     }
 
     @Test
-    void listBOQueriesEnabledRolesOfUserWithLimit() {
-        RoleDO roleDO = newRoleDO(1);
-        RoleBO roleBO = newRoleBO(1);
+    void listBOQueriesOwnRolesThenPublicRolesWithLimit() {
+        RoleDO ownDO = newRoleDO(1);
+        RoleBO ownBO = newRoleBO(1);
+        RoleDO publicDO = newRoleDO(2);
+        RoleBO publicBO = newRoleBO(2);
 
-        when(roleMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(roleDO));
-        when(roleConvert.toBO(roleDO)).thenReturn(roleBO);
+        when(roleMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(List.of(ownDO), List.of(publicDO));
+        when(roleConvert.toBO(ownDO)).thenReturn(ownBO);
+        when(roleConvert.toBO(publicDO)).thenReturn(publicBO);
 
         List<RoleBO> result = roleService.listBO(7, 3);
 
-        assertThat(result).containsExactly(roleBO);
+        // 自己的角色在前，管理员开放的公共角色在后
+        assertThat(result).containsExactly(ownBO, publicBO);
 
         ArgumentCaptor<LambdaQueryWrapper<RoleDO>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(roleMapper).selectList(captor.capture());
-        assertThat(captor.getValue().getTargetSql())
+        verify(roleMapper, times(2)).selectList(captor.capture());
+        assertThat(captor.getAllValues().get(0).getTargetSql())
             .contains("userId =")
             .contains("state =")
             .contains("LIMIT 3");
-        assertThat(captor.getValue().getParamNameValuePairs().values()).containsExactlyInAnyOrder(7, "1");
+        assertThat(captor.getAllValues().get(0).getParamNameValuePairs().values()).containsExactlyInAnyOrder(7, "1");
+        // 公共段必须是「admin + 开放 + 启用」，否则私人角色也会被当成公共带出来
+        assertThat(captor.getAllValues().get(1).getTargetSql())
+            .contains("userId =")
+            .contains("isOpen =")
+            .contains("state =")
+            .contains("LIMIT 3");
+        assertThat(captor.getAllValues().get(1).getParamNameValuePairs().values()).contains(1, "1");
+    }
+
+    @Test
+    void listBOSkipsPublicQueryForAdmin() {
+        RoleDO ownDO = newRoleDO(1);
+        RoleBO ownBO = newRoleBO(1);
+
+        when(roleMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(ownDO));
+        when(roleConvert.toBO(ownDO)).thenReturn(ownBO);
+
+        assertThat(roleService.listBO(1, 3)).containsExactly(ownBO);
+
+        // 管理员自己的查询已经包含公共行，再查一次会让每个公共角色出现两遍
+        verify(roleMapper).selectList(any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    void getPublicDefaultBOQueriesOnlyOpenEnabledAdminRoles() {
+        RoleDO roleDO = newRoleDO(1);
+        RoleBO roleBO = newRoleBO(1);
+
+        when(roleMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(roleDO);
+        when(roleConvert.toBO(roleDO)).thenReturn(roleBO);
+
+        assertThat(roleService.getPublicDefaultBO()).isSameAs(roleBO);
+
+        ArgumentCaptor<LambdaQueryWrapper<RoleDO>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(roleMapper).selectOne(captor.capture());
+        assertThat(captor.getValue().getTargetSql())
+            .contains("userId =")
+            .contains("isOpen =")
+            .contains("state =")
+            .contains("LIMIT 1");
     }
 
     @Test
@@ -142,6 +188,8 @@ class RoleServiceImplTest {
         assertThat(result).isEqualTo(22);
         assertThat(copiedRole.getUserId()).isEqualTo(20);
         assertThat(copiedRole.getIsDefault()).isEqualTo("1");
+        // 副本不能继承源角色的开放标记，否则用户副本会被 rolePublic 当成公共角色
+        assertThat(copiedRole.getIsOpen()).isEqualTo("0");
         verify(roleMapper).insert(copiedRole);
         // 复制前必须先把目标用户原有的默认角色降级，避免出现两个默认角色
         ArgumentCaptor<LambdaUpdateWrapper<RoleDO>> resetCaptor = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);

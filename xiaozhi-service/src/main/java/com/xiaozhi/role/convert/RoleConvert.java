@@ -44,6 +44,7 @@ public interface RoleConvert {
      * createTime / updateTime 同样不在这两个接口的返回里，保持与改造前一致留空。
      */
     @Mapping(target = "isDefault", expression = "java(role.isDefault() ? \"1\" : \"0\")")
+    @Mapping(target = "isOpen", expression = "java(role.isOpen() ? \"1\" : \"0\")")
     @Mapping(target = "modelId", source = "llmConfig.modelId")
     @Mapping(target = "temperature", source = "llmConfig.temperature")
     @Mapping(target = "topP", source = "llmConfig.topP")

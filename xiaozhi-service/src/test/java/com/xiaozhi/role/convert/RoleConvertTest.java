@@ -43,6 +43,7 @@ class RoleConvertTest {
         projection.setModelProvider("aliyun");
         projection.setTtsProvider("edge");
         projection.setIsDefault("1");
+        projection.setIsOpen("1");
         projection.setTotalDevice(2);
         projection.setCreateTime(LocalDateTime.of(2026, 1, 1, 0, 0));
         projection.setUpdateTime(LocalDateTime.of(2026, 9, 1, 0, 0));

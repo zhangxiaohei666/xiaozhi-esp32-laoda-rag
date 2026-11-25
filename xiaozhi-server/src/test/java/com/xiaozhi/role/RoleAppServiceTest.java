@@ -2,6 +2,7 @@ package com.xiaozhi.role;
 
 import com.xiaozhi.common.model.PageResult;
 import com.xiaozhi.common.model.req.RoleCreateReq;
+import com.xiaozhi.common.model.req.RolePageReq;
 import com.xiaozhi.common.model.req.RoleUpdateReq;
 import com.xiaozhi.common.model.resp.RoleResp;
 import com.xiaozhi.device.service.DeviceService;
@@ -29,6 +30,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -47,6 +49,9 @@ class RoleAppServiceTest {
 
     @Mock
     private RoleService roleService;
+
+    @Mock
+    private com.xiaozhi.user.service.UserService userService;
 
     @Mock
     private RoleRepository roleRepository;
@@ -74,6 +79,44 @@ class RoleAppServiceTest {
         ReflectionTestUtils.setField(roleAppService, "deviceService", deviceService);
         ReflectionTestUtils.setField(roleAppService, "summaryService", summaryService);
         ReflectionTestUtils.setField(roleAppService, "conversationService", conversationService);
+        ReflectionTestUtils.setField(roleAppService, "userService", userService);
+    }
+
+    @Test
+    void deleteRefusesWhileRoleIsStillOpenToEveryone() {
+        when(roleRepository.findById(ROLE_ID)).thenReturn(Optional.of(publicRole()));
+
+        assertThatThrownBy(() -> roleAppService.delete(ROLE_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("公共角色不可删除，请先关闭开放开关");
+
+        verify(roleRepository, never()).delete(any());
+    }
+
+    @Test
+    void pageForcesEnabledStateForNonAdmin() {
+        when(userService.isAdmin(7)).thenReturn(false);
+        when(roleService.page(anyInt(), anyInt(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1, 1));
+
+        RolePageReq req = new RolePageReq();
+        roleAppService.page(req, 7);
+
+        // RolePageReq.state 没有默认值，不传就不过滤；普通用户不该看到停用角色
+        assertThat(req.getState()).isEqualTo(Role.STATE_ENABLED);
+    }
+
+    @Test
+    void pageLeavesStateFilterAloneForAdmin() {
+        when(userService.isAdmin(1)).thenReturn(true);
+        when(roleService.page(anyInt(), anyInt(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1, 1));
+
+        RolePageReq req = new RolePageReq();
+        roleAppService.page(req, 1);
+
+        // 管理员保留查看停用角色的能力
+        assertThat(req.getState()).isNull();
     }
 
     @Test
@@ -165,6 +208,8 @@ class RoleAppServiceTest {
         assertThat(resp.getVadSilenceMs()).isEqualTo(500);
         assertThat(resp.getInactiveTimeoutSeconds()).isEqualTo(120);
         assertThat(resp.getIsDefault()).isEqualTo("1");
+        // 新建角色一律不开放：开放只能由管理员在管理端开关上打开
+        assertThat(resp.getIsOpen()).isEqualTo("0");
         assertThat(resp.getState()).isEqualTo(Role.STATE_ENABLED);
         // JOIN 出来的展示列与时间戳本来就不在这个接口的返回里
         assertThat(resp.getModelName()).isNull();
@@ -251,7 +296,7 @@ class RoleAppServiceTest {
     /** 库里已有的一个角色，字段全带值，用于钉住局部更新的出参一个字段都不少 */
     private static Role storedRole() {
         return new Role(ROLE_ID, 7, "avatar/role.png", "小智", "语音助手", Role.STATE_ENABLED,
-                false, 120,
+                false, false, 120,
                 new LlmConfig(5, 0.2, 0.5),
                 new VoiceConfig(3, 4, "xiaoyun", 1.3, 0.8, "泽宇\n小米音箱 11"),
                 new AudioConfig(0.1f, 0.2f, 0.3f, 500),
@@ -260,7 +305,16 @@ class RoleAppServiceTest {
 
     /** 建库早期落下的行：五个可空列都是 NULL */
     private static Role legacyRole() {
-        return new Role(ROLE_ID, 7, null, "小智", null, Role.STATE_ENABLED, false, null,
+        return new Role(ROLE_ID, 7, null, "小智", null, Role.STATE_ENABLED, false, false, null,
+                new LlmConfig(5, null, null),
+                new VoiceConfig(3, null, null, null, null, null),
+                new AudioConfig(null, null, null, null),
+                CREATED_AT, CREATED_AT);
+    }
+
+    /** 管理员名下的公共角色 */
+    private static Role publicRole() {
+        return new Role(ROLE_ID, 1, null, "牢大", null, Role.STATE_ENABLED, true, true, 60,
                 new LlmConfig(5, null, null),
                 new VoiceConfig(3, null, null, null, null, null),
                 new AudioConfig(null, null, null, null),

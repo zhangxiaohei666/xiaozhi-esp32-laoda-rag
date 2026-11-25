@@ -46,10 +46,11 @@ class OwnershipConfigTest {
             config.templateOwnershipChecker(mock(TemplateService.class)).getResource(),
             config.deviceOwnershipChecker(mock(DeviceService.class)).getResource(),
             config.messageOwnershipChecker(mock(MessageService.class)).getResource(),
-            config.userOwnershipChecker(mock(UserService.class)).getResource());
+            config.userOwnershipChecker(mock(UserService.class)).getResource(),
+            config.rolePublicOwnershipChecker(mock(RoleService.class)).getResource());
 
         assertThat(resources).doesNotHaveDuplicates()
-            .containsExactly("role", "config", "configWrite", "template", "device", "message", "user");
+            .containsExactly("role", "config", "configWrite", "template", "device", "message", "user", "rolePublic");
     }
 
     @Test
@@ -94,6 +95,70 @@ class OwnershipConfigTest {
 
         assertThatThrownBy(() -> config.roleOwnershipChecker(roleService).check(3, OWNER))
             .isInstanceOf(UnauthorizedException.class);
+    }
+
+    /**
+     * rolePublic 只放行「开放 + 启用」的公共角色：绑定与聊天走它，
+     * 但租户自己的私人角色仍然只认本人，关闭或停用的公共角色也不放行。
+     */
+    @Test
+    void rolePublicCheckPassesForOwnRole() {
+        RoleService roleService = mock(RoleService.class);
+        when(roleService.getBO(3)).thenReturn(role(OTHER));
+
+        assertThatCode(() -> config.rolePublicOwnershipChecker(roleService).check(3, OTHER))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void rolePublicCheckPassesForOpenPublicRole() {
+        RoleService roleService = mock(RoleService.class);
+        when(roleService.getBO(3)).thenReturn(publicRole());
+
+        assertThatCode(() -> config.rolePublicOwnershipChecker(roleService).check(3, OTHER))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void rolePublicCheckRejectsOtherUsersPrivateRole() {
+        RoleService roleService = mock(RoleService.class);
+        when(roleService.getBO(3)).thenReturn(role(OWNER));
+
+        assertThatThrownBy(() -> config.rolePublicOwnershipChecker(roleService).check(3, OTHER))
+            .isInstanceOf(UnauthorizedException.class)
+            .hasMessage("角色不归属当前用户");
+    }
+
+    @Test
+    void rolePublicCheckRejectsClosedPublicRole() {
+        RoleService roleService = mock(RoleService.class);
+        RoleBO role = publicRole();
+        role.setIsOpen("0");
+        when(roleService.getBO(3)).thenReturn(role);
+
+        assertThatThrownBy(() -> config.rolePublicOwnershipChecker(roleService).check(3, OTHER))
+            .isInstanceOf(UnauthorizedException.class);
+    }
+
+    @Test
+    void rolePublicCheckRejectsDisabledPublicRole() {
+        RoleService roleService = mock(RoleService.class);
+        RoleBO role = publicRole();
+        role.setState("0");
+        when(roleService.getBO(3)).thenReturn(role);
+
+        assertThatThrownBy(() -> config.rolePublicOwnershipChecker(roleService).check(3, OTHER))
+            .isInstanceOf(UnauthorizedException.class);
+    }
+
+    @Test
+    void rolePublicCheckRejectsMissingRoleAsNotFound() {
+        RoleService roleService = mock(RoleService.class);
+        when(roleService.getBO(3)).thenReturn(null);
+
+        assertThatThrownBy(() -> config.rolePublicOwnershipChecker(roleService).check(3, OWNER))
+            .isInstanceOf(ResourceNotFoundException.class)
+            .hasMessage("角色不存在");
     }
 
     @Test
@@ -327,6 +392,14 @@ class OwnershipConfigTest {
         RoleBO role = new RoleBO();
         role.setRoleId(3);
         role.setUserId(userId);
+        return role;
+    }
+
+    /** admin 名下、开放且启用的公共角色 */
+    private static RoleBO publicRole() {
+        RoleBO role = role(1);
+        role.setIsOpen("1");
+        role.setState("1");
         return role;
     }
 

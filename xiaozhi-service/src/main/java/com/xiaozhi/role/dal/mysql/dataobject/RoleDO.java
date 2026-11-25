@@ -40,4 +40,6 @@ public class RoleDO extends BaseDO {
     private Integer vadSilenceMs;
     private Integer inactiveTimeoutSeconds;
     private String isDefault;
+    /** 公共角色开放标记：只有 admin（userId=1）名下的行可能为 "1"，用户私人角色恒 "0" */
+    private String isOpen;
 }

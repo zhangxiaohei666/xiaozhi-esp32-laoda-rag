@@ -81,6 +81,9 @@ public class RoleResp {
     @Schema(description = "是否默认角色(1是 0否)")
     private String isDefault;
 
+    @Schema(description = "公共角色开放标记(1开放 0仅本人)；前端按它 + 当前用户身份决定「只读」样式")
+    private String isOpen;
+
     @Schema(description = "总设备数")
     private Integer totalDevice;
 

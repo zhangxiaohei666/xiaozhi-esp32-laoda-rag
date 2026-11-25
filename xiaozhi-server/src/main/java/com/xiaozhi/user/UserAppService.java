@@ -4,6 +4,7 @@ import com.xiaozhi.authrole.convert.AuthRoleConvert;
 import com.xiaozhi.authrole.service.AuthRoleService;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UserPasswordNotMatchException;
+import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.common.model.bo.UserAuthBO;
 import com.xiaozhi.common.model.bo.UserBO;
 import com.xiaozhi.common.model.req.UserPageReq;
@@ -32,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -129,13 +131,17 @@ public class UserAppService {
     /**
      * 创建用户并初始化默认资源（角色、模板、虚拟设备）。
      * 供注册、手机号登录自动注册、微信登录自动注册共用。
+     * <p>角色不再复制副本：新用户直接引用公共默认角色（admin 名下「开放 + 启用」的默认角色）。
+     * 公共角色一个都没有时宁可注册失败，也不能给 sys_device 写 null roleId。
      */
     @Transactional
     public UserBO createUserWithDefaults(UserBO user) {
         UserBO created = userService.create(user);
         Integer userId = created.getUserId();
 
-        Integer defaultRoleId = roleService.copyDefaultRole(SEED_OWNER_USER_ID, userId);
+        RoleBO publicDefaultRole = roleService.getPublicDefaultBO();
+        Integer defaultRoleId = publicDefaultRole == null ? null : publicDefaultRole.getRoleId();
+        Objects.requireNonNull(defaultRoleId, "公共默认角色缺失，无法注册");
         templateService.copyTemplates(SEED_OWNER_USER_ID, userId);
         deviceService.registerWebChat(userId, defaultRoleId);
 

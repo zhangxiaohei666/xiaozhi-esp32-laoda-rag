@@ -55,7 +55,8 @@ public class ChangeRoleFunction implements ToolsGlobalRegistry.GlobalFunction {
         if (device == null || device.getUserId() == null) {
             return null;
         }
-        List<RoleBO> roleList = roleService.listBO(device.getUserId(), 5);
+        // 私人角色与公共角色一起给：两段各取 10 个，最多 20 个候选（5 个会把公共角色挤出候选列表）
+        List<RoleBO> roleList = roleService.listBO(device.getUserId(), 10);
         if(!roleList.isEmpty() && roleList.size() > 1) {
             return FunctionToolCallback
                     .builder(TOOL_NAME, (Map<String, String> params, ToolContext toolContext) -> {

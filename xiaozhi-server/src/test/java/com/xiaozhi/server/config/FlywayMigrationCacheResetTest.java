@@ -17,24 +17,28 @@ import static org.mockito.Mockito.when;
 /**
  * 迁移会补权限、改授权与默认配置，缓存里的旧值要等过期（权限 7 天），这期间新功能对所有人 403。
  * 本次启动真的执行了迁移才清，没迁移时重启不该把缓存冲掉。
+ * <p>ROLE 同一口径：加列迁移后旧 RoleBO 缺字段（isOpen 为 null），不清会让公共角色判定失效一天。
  */
 class FlywayMigrationCacheResetTest {
 
     private final CacheManager cacheManager = mock(CacheManager.class);
     private final Cache permissionCache = mock(Cache.class);
     private final Cache configCache = mock(Cache.class);
+    private final Cache roleCache = mock(Cache.class);
     private final FlywayMigrationCacheReset reset = new FlywayMigrationCacheReset(provider(cacheManager));
 
     @Test
-    void clearsPermissionAndConfigCachesWhenMigrationsRan() {
+    void clearsPermissionConfigAndRoleCachesWhenMigrationsRan() {
         when(cacheManager.getCache(CacheNames.PERMISSION)).thenReturn(permissionCache);
         when(cacheManager.getCache(CacheNames.SYS_CONFIG)).thenReturn(configCache);
+        when(cacheManager.getCache(CacheNames.ROLE)).thenReturn(roleCache);
 
         reset.migrate(flywayExecuting(2));
         reset.resetCachesAfterMigration();
 
         verify(permissionCache).invalidate();
         verify(configCache).invalidate();
+        verify(roleCache).invalidate();
     }
 
     @Test

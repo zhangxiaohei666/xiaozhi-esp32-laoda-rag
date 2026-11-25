@@ -432,7 +432,10 @@ class ProtocolFuzzToleranceTest {
 
         RoleBO defaultRole = new RoleBO();
         defaultRole.setRoleId(1);
-        defaultRole.setUserId(VIRTUAL_USER_ID);
+        // 公共默认角色属于 admin，且开放、启用
+        defaultRole.setUserId(1);
+        defaultRole.setIsOpen("1");
+        defaultRole.setState("1");
         defaultRole.setRoleName("协议测试角色");
 
         doAnswer(invocation -> {
@@ -442,6 +445,6 @@ class ProtocolFuzzToleranceTest {
         doAnswer(invocation -> virtualDeviceRegistered.get() ? bound : unbound)
                 .when(harness.deviceService()).getBO(VIRTUAL_DEVICE_ID);
         doAnswer(invocation -> defaultRole)
-                .when(harness.roleService()).getDefaultOrFirstBO(VIRTUAL_USER_ID);
+                .when(harness.roleService()).getPublicDefaultBO();
     }
 }

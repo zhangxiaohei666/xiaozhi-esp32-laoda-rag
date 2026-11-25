@@ -1,5 +1,6 @@
 package com.xiaozhi.user;
 
+import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.common.exception.ResourceNotFoundException;
 import com.xiaozhi.common.exception.UnauthorizedException;
 import com.xiaozhi.common.exception.UserPasswordNotMatchException;
@@ -78,7 +79,9 @@ class UserAppServiceLoginTest {
         UserBO created = new UserBO();
         created.setUserId(userId);
         when(userService.create(any(UserBO.class))).thenReturn(created);
-        when(roleService.copyDefaultRole(1, userId)).thenReturn(11);
+        RoleBO publicDefaultRole = new RoleBO();
+        publicDefaultRole.setRoleId(11);
+        when(roleService.getPublicDefaultBO()).thenReturn(publicDefaultRole);
     }
 
     // ==================== 账号密码 ====================
@@ -273,7 +276,7 @@ class UserAppServiceLoginTest {
         ArgumentCaptor<UserBO> captor = ArgumentCaptor.forClass(UserBO.class);
         verify(userService).create(captor.capture());
         assertThat(captor.getValue().getUsername()).isEqualTo("wx_ab");
-        verify(roleService).copyDefaultRole(1, 7);
+        verify(roleService).getPublicDefaultBO();
     }
 
     @Test

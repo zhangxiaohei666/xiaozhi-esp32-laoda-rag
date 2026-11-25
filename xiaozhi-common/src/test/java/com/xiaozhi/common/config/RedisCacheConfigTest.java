@@ -1,6 +1,7 @@
 package com.xiaozhi.common.config;
 
 import com.xiaozhi.common.model.bo.PermissionBO;
+import com.xiaozhi.common.model.bo.RoleBO;
 import com.xiaozhi.common.model.bo.UserBO;
 import org.junit.jupiter.api.Test;
 import org.springframework.cache.Cache;
@@ -85,6 +86,38 @@ class RedisCacheConfigTest {
     }
 
     @Test
+    void cachedRoleBoDoesNotPersistComputedPublicRole() {
+        RoleBO role = new RoleBO();
+        role.setRoleId(1);
+        role.setUserId(1);
+        role.setState("1");
+        role.setIsOpen("1");
+
+        byte[] payload = bytesOf(valueSerializer.write(role));
+        String json = new String(payload, StandardCharsets.UTF_8);
+
+        // isPublicRole() 是计算属性：写进缓存会变成 publicRole 字段，读回来没有 setter 就 500
+        assertThat(json).doesNotContain("publicRole");
+        assertThat(valueSerializer.read(ByteBuffer.wrap(payload))).isEqualTo(role);
+    }
+
+    @Test
+    void legacyRoleBoPayloadWithUnknownPropertyStillReads() {
+        RoleBO role = new RoleBO();
+        role.setRoleId(2);
+        role.setUserId(1);
+        role.setState("1");
+
+        byte[] payload = bytesOf(valueSerializer.write(role));
+        String legacy = new String(payload, StandardCharsets.UTF_8)
+            .replace("\"state\":\"1\"", "\"state\":\"1\",\"publicRole\":true");
+
+        // 旧版本可能把计算属性写进缓存，升级后第一次读旧缓存不能炸
+        Object restored = valueSerializer.read(ByteBuffer.wrap(legacy.getBytes(StandardCharsets.UTF_8)));
+        assertThat(restored).isInstanceOf(RoleBO.class);
+    }
+
+    @Test
     void typeOutsideAllowListIsRejected() {
         ByteBuffer forgedPayload = ByteBuffer.wrap("[\"java.io.File\",\"/tmp/x\"]".getBytes(StandardCharsets.UTF_8));
 
@@ -114,6 +147,15 @@ class RedisCacheConfigTest {
 
     private Object roundTrip(Object value) {
         return valueSerializer.read(valueSerializer.write(value));
+    }
+
+    /** SerializationPair 写完 buffer 停在末尾，复制后 rewind 才能取出全部字节。 */
+    private static byte[] bytesOf(ByteBuffer buffer) {
+        ByteBuffer copy = buffer.duplicate();
+        copy.rewind();
+        byte[] bytes = new byte[copy.remaining()];
+        copy.get(bytes);
+        return bytes;
     }
 
     /** 缓存名走的是同一个值序列化器，取任意一个缓存即可拿到它。 */

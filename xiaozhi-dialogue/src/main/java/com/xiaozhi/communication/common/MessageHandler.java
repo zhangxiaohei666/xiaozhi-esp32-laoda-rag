@@ -219,13 +219,13 @@ public class MessageHandler {
         }
         deviceId = device.getDeviceId();
         
-        // 网页聊天的虚拟设备没绑角色时，绑到用户的默认角色
+        // 网页聊天的虚拟设备没绑角色时，绑到公共默认角色（与用户有没有私人角色无关）
         Integer userId = WebChatDevice.userIdOf(deviceId);
         if (userId != null) {
             try {
                 log.info("检测到虚拟设备 {}，尝试自动绑定", deviceId);
 
-                RoleBO defaultRole = roleService.getDefaultOrFirstBO(userId);
+                RoleBO defaultRole = roleService.getPublicDefaultBO();
                 Integer defaultRoleId = defaultRole != null ? defaultRole.getRoleId() : null;
                 
                 if (defaultRoleId != null) {

@@ -41,7 +41,7 @@ public class MemoryController extends BaseController {
     @GetMapping("/summary")
     @SaCheckPermission("system:role:memory:summary:api:list")
     @CheckOwner(resource = "device", id = "#deviceId")
-    @CheckOwner(resource = "role", id = "#roleId")
+    @CheckOwner(resource = "rolePublic", id = "#roleId")
     @Operation(summary = "查询对话摘要", description = "不传设备时查当前用户全部设备，不传角色时不限角色")
     public ApiResponse<PageResult<SummaryResp>> querySummary(@RequestParam(required = false) String deviceId,
                                                              @RequestParam(required = false) Integer roleId,

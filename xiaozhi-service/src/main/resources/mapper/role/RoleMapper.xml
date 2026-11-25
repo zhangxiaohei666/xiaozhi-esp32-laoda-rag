@@ -26,6 +26,7 @@
         model_config.provider AS modelProvider,
         tts_config.provider AS ttsProvider,
         r.isDefault,
+        r.isOpen,
         (
             SELECT COUNT(*)
             FROM sys_device d
@@ -45,7 +46,8 @@
            AND model_config.configType = 'llm'
         WHERE 1 = 1
         <if test="userId != null">
-            AND r.userId = #{userId}
+            <!-- 普通用户看到「自己的行 + 管理员开放的公共行」；userId=1 两个分支重叠，只返回一次 -->
+            AND (r.userId = #{userId} OR (r.userId = 1 AND r.isOpen = 1))
         </if>
         <if test="roleId != null">
             AND r.roleId = #{roleId}

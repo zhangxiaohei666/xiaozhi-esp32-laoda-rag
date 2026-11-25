@@ -31,6 +31,7 @@ public class RoleProjection {
     private String modelProvider;
     private String ttsProvider;
     private String isDefault;
+    private String isOpen;
     private Integer totalDevice;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

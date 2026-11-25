@@ -21,10 +21,14 @@ import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
 public class RoleServiceImpl implements RoleService {
+
+    /** 公共角色的所有者：V1 初始化的那个管理员。与 UserAppService.SEED_OWNER_USER_ID 同一来源，不由入参决定 */
+    private static final int ADMIN_USER_ID = 1;
 
     // 缓存名称统一定义在 RoleService 接口中
 
@@ -79,14 +83,27 @@ public class RoleServiceImpl implements RoleService {
         if (userId == null || limit <= 0) {
             return List.of();
         }
-        List<RoleBO> roles = roleMapper.selectList(new LambdaQueryWrapper<RoleDO>()
+        List<RoleBO> roles = new ArrayList<>(roleMapper.selectList(new LambdaQueryWrapper<RoleDO>()
                 .eq(RoleDO::getUserId, userId)
                 .eq(RoleDO::getState, Role.STATE_ENABLED)
                 .orderByDesc(RoleDO::getIsDefault, RoleDO::getCreateTime)
                 .last("LIMIT " + limit))
             .stream()
             .map(roleConvert::toBO)
-            .toList();
+            .toList());
+        // 管理员自己的查询已经包含全部公共行，再合并一次会让每个公共角色出现两遍
+        if (userId != ADMIN_USER_ID) {
+            roles.addAll(roleMapper.selectList(new LambdaQueryWrapper<RoleDO>()
+                    .eq(RoleDO::getUserId, ADMIN_USER_ID)
+                    .eq(RoleDO::getIsOpen, "1")
+                    .eq(RoleDO::getState, Role.STATE_ENABLED)
+                    .orderByDesc(RoleDO::getIsDefault)
+                    .orderByAsc(RoleDO::getRoleId)
+                    .last("LIMIT " + limit))
+                .stream()
+                .map(roleConvert::toBO)
+                .toList());
+        }
         return roles;
     }
 
@@ -108,6 +125,22 @@ public class RoleServiceImpl implements RoleService {
         return roleBO;
     }
 
+    /**
+     * 公共默认角色：isOpen 是硬条件，管理员怎么改 isDefault 都跑不出公共集合；
+     * 没有默认就取 roleId 最小的那个公共开放角色。
+     */
+    @Override
+    public RoleBO getPublicDefaultBO() {
+        RoleDO roleDO = roleMapper.selectOne(new LambdaQueryWrapper<RoleDO>()
+            .eq(RoleDO::getUserId, ADMIN_USER_ID)
+            .eq(RoleDO::getIsOpen, "1")
+            .eq(RoleDO::getState, Role.STATE_ENABLED)
+            .orderByDesc(RoleDO::getIsDefault)
+            .orderByAsc(RoleDO::getRoleId)
+            .last("LIMIT 1"));
+        return roleDO == null ? null : roleConvert.toBO(roleDO);
+    }
+
     @Override
     @Transactional
     public Integer copyDefaultRole(Integer sourceUserId, Integer targetUserId) {
@@ -122,6 +155,8 @@ public class RoleServiceImpl implements RoleService {
         RoleDO copiedRole = roleConvert.copy(sourceRole);
         copiedRole.setUserId(targetUserId);
         copiedRole.setIsDefault("1");
+        // 副本永远是私人角色：不跟着源角色的开放标记走，否则用户副本会被当成公共角色
+        copiedRole.setIsOpen("0");
         if (roleMapper.insert(copiedRole) <= 0) {
             throw new IllegalStateException("复制默认角色失败");
         }

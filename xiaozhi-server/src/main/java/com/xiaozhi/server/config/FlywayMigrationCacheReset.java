@@ -16,12 +16,15 @@ import java.util.List;
 /**
  * 迁移会补权限、改授权与默认配置，缓存里的旧值要等过期（权限 7 天），这期间新加的功能对所有人 403。
  * 本次启动真的执行了迁移，就在启动完成后清掉这几份缓存；Redis 两个进程共用，清一次都生效。
+ * <p>ROLE 也必须清：加列类迁移（如 V94 的 isOpen）之后，Redis 里旧的 RoleBO JSON 没有新字段，
+ * 反序列化出来是 null，归属判定会把公共角色当成私有，最长错到缓存过期（1 天）。
  */
 @Slf4j
 @Component
 public class FlywayMigrationCacheReset implements FlywayMigrationStrategy {
 
-    private static final List<String> MIGRATION_AFFECTED_CACHES = List.of(CacheNames.PERMISSION, CacheNames.SYS_CONFIG);
+    private static final List<String> MIGRATION_AFFECTED_CACHES =
+        List.of(CacheNames.PERMISSION, CacheNames.SYS_CONFIG, CacheNames.ROLE);
 
     /** 迁移在数据源初始化阶段就跑，那时不去碰缓存，启动完成后再取 */
     private final ObjectProvider<CacheManager> cacheManager;

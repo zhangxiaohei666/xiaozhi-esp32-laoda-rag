@@ -28,6 +28,7 @@ import org.springframework.util.StringUtils;
 
 import java.security.SecureRandom;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 @Service
@@ -194,6 +195,8 @@ public class DeviceServiceImpl implements DeviceService {
 
     @Override
     public void registerWebChat(Integer userId, Integer roleId) {
+        // 公共角色全部停用/关闭时注册会拿到 null：写进 sys_device 就是悬空引用，到开场才炸，这里提前挡住
+        Objects.requireNonNull(roleId, "公共默认角色缺失，无法创建网页聊天设备");
         deviceRepository.save(Device.newDevice(WebChatDevice.deviceIdOf(userId),
             WebChatDevice.DEVICE_NAME, WebChatDevice.DEVICE_TYPE, userId, roleId));
     }

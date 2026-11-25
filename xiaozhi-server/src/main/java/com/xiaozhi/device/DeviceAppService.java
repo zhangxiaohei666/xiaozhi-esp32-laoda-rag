@@ -119,7 +119,8 @@ public class DeviceAppService {
             throw new IllegalStateException("设备已被其他用户绑定");
         }
 
-        RoleBO selectedRole = roleService.getDefaultOrFirstBO(userId);
+        // 新设备一律绑公共默认角色（牢大），与当前用户有没有私人角色无关
+        RoleBO selectedRole = roleService.getPublicDefaultBO();
         if (selectedRole == null) {
             throw new IllegalStateException("没有配置角色");
         }
@@ -163,7 +164,8 @@ public class DeviceAppService {
             throw new IllegalStateException("设备不在线，请先将设备开机联网后再扫码");
         }
 
-        RoleBO selectedRole = roleService.getDefaultOrFirstBO(userId);
+        // 新设备一律绑公共默认角色（牢大），与当前用户有没有私人角色无关
+        RoleBO selectedRole = roleService.getPublicDefaultBO();
         if (selectedRole == null) {
             throw new IllegalStateException("没有配置角色");
         }
@@ -248,11 +250,18 @@ public class DeviceAppService {
         return role;
     }
 
-    /** 设备只能绑它所属用户的角色：管理员越得过接口上的归属校验，这条不能跟着放开 */
+    /**
+     * 设备只能绑「自己的角色」或「公共开放角色」：管理员越得过接口上的归属校验，这条不能跟着放开。
+     * <p>公共 = admin 名下 + isOpen=1 + 启用；关闭开放或停用的角色，已绑设备继续用，但不能再绑新设备。
+     */
     private static void requireSameOwner(RoleBO role, Device device) {
-        if (!Objects.equals(role.getUserId(), device.getUserId())) {
-            throw new IllegalArgumentException("角色不属于设备所属用户");
+        if (Objects.equals(role.getUserId(), device.getUserId())) {
+            return;
         }
+        if (role.isPublicRole()) {
+            return;
+        }
+        throw new IllegalArgumentException("角色不属于设备所属用户");
     }
 
     public DeviceResp generateCode(String deviceId, String sessionId, String type) {
