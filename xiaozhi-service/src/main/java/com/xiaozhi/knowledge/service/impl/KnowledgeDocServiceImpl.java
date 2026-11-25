@@ -186,10 +186,13 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
             qw.and(w -> w.like(KnowledgeDocDO::getTitle, keyword)
                     .or().like(KnowledgeDocDO::getFileName, keyword));
         }
-        // 非管理员：只看「自己的」。共享文档属于别人上传的公共资产，不进「我的文档」列表；
-        // 它仍会参与 RAG 检索（检索侧另有 scope==shared 的口径），这里只影响文档管理列表。
+        // 非管理员：看「自己的 + 共享的」，与 stats / listCategories / assertCanSee 同一口径。
+        // 2026-11-25 修正：原来只按 userId 过滤，共享资料在列表里全部消失（统计卡片却计数），
+        // 普通用户知识库页面空白。共享资料只读展示：删除仍走 assertCanModify（本人或管理员），
+        // 放开列表不等于放开写权限；scope 筛选参数与本条件 AND 组合，互不覆盖。
         if (ownerUserId != null) {
-            qw.eq(KnowledgeDocDO::getUserId, ownerUserId);
+            qw.and(w -> w.eq(KnowledgeDocDO::getUserId, ownerUserId)
+                    .or().eq(KnowledgeDocDO::getScope, KnowledgeDocDO.SCOPE_SHARED));
         }
         qw.orderByDesc(KnowledgeDocDO::getCreateTime);
 

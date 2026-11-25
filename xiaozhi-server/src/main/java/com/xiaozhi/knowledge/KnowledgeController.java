@@ -190,7 +190,7 @@ public class KnowledgeController extends BaseController {
     @GetMapping("/documents")
     @ResponseBody
     @SaCheckPermission("system:knowledge:api:list")
-    @Operation(summary = "文档列表", description = "非管理员只返回自己的文档；管理员返回全部并带归属用户名")
+    @Operation(summary = "文档列表", description = "非管理员返回自己的与共享的文档（共享只读）；管理员返回全部并带归属用户名")
     public ApiResponse<PageResult<KnowledgeDocResp>> listDocuments(
             @Parameter(description = "页码") @RequestParam(value = "pageNo", defaultValue = "1") int pageNo,
             @Parameter(description = "每页条数") @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
