@@ -33,6 +33,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "com.xiaozhi.device",
         "com.xiaozhi.mcptoolexclude",
         "com.xiaozhi.message",
+        "com.xiaozhi.operationlog",   // LibraryConfirmActionFunction 注入 OperationLogService
         "com.xiaozhi.monitoring",
         "com.xiaozhi.role",
         "com.xiaozhi.summary",
@@ -52,6 +53,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
     "com.xiaozhi.device.dal.mysql.mapper",
     "com.xiaozhi.mcptoolexclude.dal.mysql.mapper",
     "com.xiaozhi.message.dal.mysql.mapper",
+    "com.xiaozhi.operationlog.dal.mysql.mapper",
     "com.xiaozhi.role.dal.mysql.mapper",
     "com.xiaozhi.summary.dal.mysql.mapper",
     "com.xiaozhi.verifycode.dal.mysql.mapper",
