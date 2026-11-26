@@ -49,6 +49,8 @@ const { containerRef: chatContentRef, scrollToBottom, isAtBottom } = useScroll({
 // 角色列表和当前选中的角色
 const roleList = ref<Role[]>([])
 const selectedRoleId = ref<number | undefined>()
+// 设备上已经生效的角色。切角色失败时用它把下拉框还原，避免界面显示 B、设备仍是 A
+const confirmedRoleId = ref<number | undefined>()
 
 // 头像
 const userAvatar = computed(() => getAvatarUrl(userStore.userInfo?.avatar))
@@ -74,7 +76,9 @@ const fetchRoles = async () => {
       roleList.value = res.data.list
       // 设置默认选中的角色（第一个默认角色或第一个角色）
       const defaultRole = roleList.value.find(r => r.isDefault === '1')
-      selectedRoleId.value = defaultRole?.roleId || roleList.value[0]?.roleId
+      const initialRoleId = defaultRole?.roleId || roleList.value[0]?.roleId
+      selectedRoleId.value = initialRoleId
+      confirmedRoleId.value = initialRoleId
     }
   } catch (error) {
     console.error('load roles failed:', error)
@@ -88,6 +92,7 @@ const handleRoleChange = async (roleId: number) => {
     return
   }
 
+  const previousRoleId = confirmedRoleId.value
   try {
     // 更新虚拟设备的角色ID
     await updateDevice({
@@ -95,13 +100,19 @@ const handleRoleChange = async (roleId: number) => {
       roleId: roleId
     })
 
+    confirmedRoleId.value = roleId
     AMessage.success(t('chat.floating.roleChanged'))
 
     // 如果已连接，断开连接（下次发送消息时会自动重连，使用新角色）
     if (isConnected.value) {
       disconnect()
     }
+
+    // 浮窗的消息列表是前端本地状态，不随后端切角色自动清空。
+    // 不清会把上一个角色的对话留在当前角色窗口里，看起来像多个角色共用一段对话。
+    clearAllMessages()
   } catch (error) {
+    selectedRoleId.value = previousRoleId
     AMessage.error(t('chat.floating.roleChangeFailed'))
     console.error('switch role failed:', error)
   }

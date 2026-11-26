@@ -90,6 +90,7 @@ export interface ConnectionStatus {
 // =============================
 
 let webSocket: WebSocket | null = null
+let currentDeviceId: string | null = null
 let isConnecting = false
 let reconnectTimer: number | null = null
 let reconnectAttempts = 0
@@ -363,8 +364,15 @@ function notifyStatusChange(): void {
 
 export async function connectToServer(config: WebSocketConfig): Promise<boolean> {
   if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-    log('WebSocket已连接', 'info')
-    return true
+    // 每个用户/角色对应不同的虚拟设备；已连接但 deviceId 变了时必须重建，
+    // 否则切换账号后会把新账号的消息发到上一个账号的连接上。
+    if (config.deviceId && currentDeviceId && currentDeviceId !== config.deviceId) {
+      log(`WebSocket设备身份已变化(${currentDeviceId} -> ${config.deviceId})，重建连接`, 'warning')
+      disconnectFromServer()
+    } else {
+      log('WebSocket已连接', 'info')
+      return true
+    }
   }
 
   if (isConnecting) {
@@ -421,6 +429,7 @@ export async function connectToServer(config: WebSocketConfig): Promise<boolean>
 
     // 创建WebSocket连接
     webSocket = new WebSocket(url)
+    currentDeviceId = config.deviceId ?? null
     webSocket.binaryType = 'arraybuffer'
 
     // 连接打开事件
