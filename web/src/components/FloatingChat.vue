@@ -8,7 +8,7 @@ import { useAvatar } from '@/composables/useAvatar'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { useScroll } from '@/composables/useScroll'
 import { queryRoles } from '@/services/role'
-import { updateDevice } from '@/services/device'
+import { queryDevices, updateDevice } from '@/services/device'
 import { addMessage } from '@/services/websocket'
 import { getRelativeTime } from '@/utils/date'
 import type { Role } from '@/types/role'
@@ -67,6 +67,20 @@ const wsConfig = computed(() => ({
   token: userStore.token
 }))
 
+// 查虚拟设备当前绑定的角色。后端对话按设备角色走，下拉框必须跟随它：
+// 否则设备页改过角色后，浮窗还显示公共默认角色，出现"界面是牢大、回答是雪峰老师"。
+// 设备在首条对话消息前还没建，查不到就返回 undefined，由调用方回退默认角色。
+const fetchDeviceRoleId = async (): Promise<number | undefined> => {
+  if (!virtualDeviceId.value) return undefined
+  try {
+    const res = await queryDevices({ deviceId: virtualDeviceId.value, pageNo: 1, pageSize: 1 })
+    return res.data?.list?.[0]?.roleId ?? undefined
+  } catch (error) {
+    console.error('load device role failed:', error)
+    return undefined
+  }
+}
+
 // 获取角色列表
 const fetchRoles = async () => {
   try {
@@ -74,9 +88,12 @@ const fetchRoles = async () => {
     const res = await queryRoles({ pageNo: 1, pageSize: 1000 })
     if (res.data?.list) {
       roleList.value = res.data.list
-      // 设置默认选中的角色（第一个默认角色或第一个角色）
+      // 优先跟设备当前角色，其次才是公共默认角色（设备没建/查询失败时的兜底）
+      const deviceRoleId = await fetchDeviceRoleId()
       const defaultRole = roleList.value.find(r => r.isDefault === '1')
-      const initialRoleId = defaultRole?.roleId || roleList.value[0]?.roleId
+      const fallbackRoleId = defaultRole?.roleId || roleList.value[0]?.roleId
+      const roleInList = (id?: number) => id != null && roleList.value.some(r => r.roleId === id)
+      const initialRoleId = roleInList(deviceRoleId) ? deviceRoleId : fallbackRoleId
       selectedRoleId.value = initialRoleId
       confirmedRoleId.value = initialRoleId
     }
@@ -732,14 +749,17 @@ const connectionStatusDot = computed(() => {
 }
 
 .user-message .message-bubble {
-  background: #95ec69;
-  color: #000;
-  
+  // 用主题主色做底，文字用「主色上的文字色」——
+  // 硬编码 #95ec69/#000 在暗色主题下会变成深底深字（对比度几乎为 0），
+  // 且浏览器强制深色模式反色后同样不可读。
+  background: var(--ant-color-primary);
+  color: #fff;
+
   // 右侧小三角
   &::before {
     right: -8px;
     border-width: 6px 0 6px 8px;
-    border-color: transparent transparent transparent #95ec69;
+    border-color: transparent transparent transparent var(--ant-color-primary);
   }
 }
 
