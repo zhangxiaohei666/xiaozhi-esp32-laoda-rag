@@ -173,6 +173,10 @@ watch(() => wsMessages.length, () => {
 const toggleChat = () => {
   chatVisible.value = !chatVisible.value
   if (chatVisible.value) {
+    // 浮窗是全局常驻组件，切路由不会重建，挂载时的 fetchRoles 只跑一次。
+    // 设备管理页可能在别处改过 user_chat_{userId} 的角色，所以每次打开都重读一次真相源，
+    // 免得下拉框停在旧角色、后端却按新角色回答。
+    void fetchRoles()
     nextTick(() => {
       scrollToBottom()
     })
