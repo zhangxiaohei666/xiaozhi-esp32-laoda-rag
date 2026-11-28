@@ -98,12 +98,13 @@ class KnowledgeSearchFunctionTest {
 
         String result = fn.execute("图书馆开馆时间", 1);
 
-        assertThat(result).contains("命中 1 条");
+        assertThat(result).contains("命中 1 条（最高相似度 0.81）");
         assertThat(result).contains("[1]");
         assertThat(result).contains("0.81");
         assertThat(result).contains("《图书馆使用规则》");
         assertThat(result).contains("开馆时间");
         assertThat(result).contains("8:00-22:00");
+        assertThat(result).doesNotContain("发布");
     }
 
     @Test
@@ -192,5 +193,79 @@ class KnowledgeSearchFunctionTest {
         var callback = fn.getFunctionCallTool(session);
 
         assertThat(callback).as("拿不到 userId 时工具仍应注册，检索侧按只查共享处理").isNotNull();
+    }
+
+    @Test
+    @DisplayName("首行最高分只取实际列出的前 5 条（第 6 条更高也不进首行）")
+    void headerMaxScoreAmongListedOnly() {
+        RetrievalService retrieval = mock(RetrievalService.class);
+        List<Document> six = List.of(
+                doc(0.65, "A", null, "内容A"), doc(0.62, "B", null, "内容B"),
+                doc(0.61, "C", null, "内容C"), doc(0.60, "D", null, "内容D"),
+                doc(0.58, "E", null, "内容E"), doc(0.99, "F", null, "内容F"));
+        when(retrieval.searchRaw("全部", 1)).thenReturn(six);
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(retrieval);
+
+        String result = fn.execute("全部", 1);
+
+        assertThat(result).contains("最高相似度 0.65");
+        assertThat(result).doesNotContain("0.99");
+    }
+
+    @Test
+    @DisplayName("正文开头的章节路径不重复渲染（入库时已拼进正文）")
+    void headingPrefixDeduplicated() {
+        RetrievalService retrieval = mock(RetrievalService.class);
+        when(retrieval.searchRaw("开馆时间", 1)).thenReturn(List.of(
+                doc(0.81, "图书馆使用规则", "开馆时间", "开馆时间\n周一至周日 8:00-22:00 开放。")));
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(retrieval);
+
+        String result = fn.execute("开馆时间", 1);
+
+        assertThat(result).contains("《图书馆使用规则》 开馆时间");
+        assertThat(countOf(result, "开馆时间")).isEqualTo(1);
+        assertThat(result).contains("8:00-22:00");
+    }
+
+    @Test
+    @DisplayName("正文以章节名开头但不是独立一行时，不误删正文")
+    void headingPrefixKeptWhenNotOwnLine() {
+        RetrievalService retrieval = mock(RetrievalService.class);
+        when(retrieval.searchRaw("开馆", 1)).thenReturn(List.of(
+                doc(0.7, "规则", "开馆时间", "开馆时间为每日 8:00，节假日除外。")));
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(retrieval);
+
+        String result = fn.execute("开馆", 1);
+
+        assertThat(countOf(result, "开馆时间")).isEqualTo(2);
+        assertThat(result).contains("开馆时间为每日 8:00");
+    }
+
+    @Test
+    @DisplayName("有发布日期时渲染在条目头（无日期不出现“发布”）")
+    void publishDateRendered() {
+        RetrievalService retrieval = mock(RetrievalService.class);
+        Map<String, Object> meta = new java.util.HashMap<>();
+        meta.put("title", "通知公告");
+        meta.put("publish_date", "2026-10-23");
+        Document.Builder builder = Document.builder().text("国庆放假安排……").metadata(meta);
+        builder.score(0.77);
+        when(retrieval.searchRaw("放假", 1)).thenReturn(List.of(builder.build()));
+        KnowledgeSearchFunction fn = new KnowledgeSearchFunction(retrieval);
+
+        String result = fn.execute("放假", 1);
+
+        assertThat(result).contains("(相似度 0.77，发布 2026-10-23) 《通知公告》");
+    }
+
+    /** 统计子串出现次数（断言"只出现一次"用） */
+    private static int countOf(String haystack, String needle) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = haystack.indexOf(needle, idx)) >= 0) {
+            count++;
+            idx += needle.length();
+        }
+        return count;
     }
 }

@@ -61,15 +61,16 @@ public class KnowledgeSearchFunction implements ToolsGlobalRegistry.GlobalFuncti
     private static final int MAX_HITS_LISTED = 5;
 
     private static final String TOOL_DESCRIPTION =
-            "查询校园知识库（图书馆规则、办事流程、通知公告、常见问题等静态资料）。"
-            + "当用户的问题可能需要查资料才能准确回答时调用本工具。"
-            + "【重要】请生成不依赖上下文的独立查询词：把用户问题中的指代（'那里''第二天'）"
-            + "替换成具体实体（'图书馆''2026-11-25'），保留主题词与限定词。"
-            + "结果里每条带相似度分数（0~1），低于 0.60 说明资料与问题不太相关，"
-            + "可以调整查询词再调一次（最多重试一次）。"
-            + "如果两次都查不到相关资料，就按你自己的知识回答并说明没查到资料。"
-            + "纯闲聊、追问上一条回答的细节、用户明确说'继续'时不要调用。"
-            + "实时数据（图书馆座位空闲数）不归本工具，用 library_seat_overview。";
+            "查询校园知识库（静态资料：图书馆规则、办事流程、通知公告、常见问题）。"
+            + "何时调用：问题需要准确资料才能答好时；闲聊、追问上一条回答已答过的内容、"
+            + "用户说'继续'时不要调用。"
+            + "查询词：自包含，把'那里''第二天'换成'图书馆''2026-11-25'，保留主题词和限定词。"
+            + "读结果：首行给出最高相似度。最高分≥0.60 时优先采信分数高的条目，"
+            + "低分条目忽略即可、不必重查；最高分<0.60 说明这批都不切题，"
+            + "换查询词再调一次（同一问题最多重试一次）；"
+            + "仍查不到就用你自己的知识回答，并说明没查到资料。"
+            + "条目带发布日期时，时效性内容以日期新的为准。"
+            + "边界：实时座位数据不归本工具，用 library_seat_overview。";
 
     private final RetrievalService retrievalService;
 
@@ -133,15 +134,41 @@ public class KnowledgeSearchFunction implements ToolsGlobalRegistry.GlobalFuncti
         }
     }
 
-    /** 渲染命中列表：编号 + 分数 + 标题/章节 + 截断正文。纯中文文本（模型组织语言比 JSON 稳）。 */
+    /**
+     * 渲染命中列表：首行条数 + 最高分，每条 = 编号 + 分数/发布日期 + 标题/章节 + 截断正文。
+     * 纯中文文本（模型组织语言比 JSON 稳）。
+     *
+     * <p>最高分只取<b>实际列出的前 {@link #MAX_HITS_LISTED} 条</b>：用未展示条目里的高分当判据，
+     * 会出现"首行最高 0.90、列表里最高 0.62"的自相矛盾。
+     */
     String renderHits(List<Document> documents) {
+        int shown = Math.min(MAX_HITS_LISTED, documents.size());
+        Double topScore = null;
+        for (int i = 0; i < shown; i++) {
+            Double s = documents.get(i).getScore();
+            if (s != null && (topScore == null || s > topScore)) {
+                topScore = s;
+            }
+        }
         StringBuilder sb = new StringBuilder();
-        sb.append("知识库命中 ").append(Math.min(MAX_HITS_LISTED, documents.size())).append(" 条：");
-        for (int i = 0; i < Math.min(MAX_HITS_LISTED, documents.size()); i++) {
+        sb.append("知识库命中 ").append(shown).append(" 条");
+        if (topScore != null) {
+            sb.append("（最高相似度 ").append(String.format("%.2f", topScore)).append("）");
+        }
+        sb.append("：");
+        for (int i = 0; i < shown; i++) {
             Document d = documents.get(i);
+            String date = metaOf(d, "publish_date");
             sb.append("\n\n[").append(i + 1).append("] ");
-            if (d.getScore() != null) {
-                sb.append("(相似度 ").append(String.format("%.2f", d.getScore())).append(") ");
+            Double score = d.getScore();
+            if (score != null) {
+                sb.append("(相似度 ").append(String.format("%.2f", score));
+                if (!date.isEmpty()) {
+                    sb.append("，发布 ").append(date);
+                }
+                sb.append(") ");
+            } else if (!date.isEmpty()) {
+                sb.append("(发布 ").append(date).append(") ");
             }
             String title = metaOf(d, "title");
             String heading = metaOf(d, "heading");
@@ -152,10 +179,25 @@ public class KnowledgeSearchFunction implements ToolsGlobalRegistry.GlobalFuncti
                 sb.append(" ").append(heading);
             }
             sb.append("\n");
-            String text = safeText(d);
+            String text = stripHeadingPrefix(safeText(d), heading);
             sb.append(text.length() > MAX_TEXT_CHARS ? text.substring(0, MAX_TEXT_CHARS) + "…" : text);
         }
         return sb.toString();
+    }
+
+    /**
+     * 去掉正文开头的章节路径：入库时每块正文都是 {@code heading + "\n" + 正文}
+     * （见 DocumentIngestService#flush），渲染层又把 heading 写进了标题行，不去掉就重复一遍。
+     *
+     * <p>只吃紧跟 heading 的那个换行：正文若以同一串字开头但不是独立一行
+     * （如 heading="开馆时间"、正文="开馆时间为…"），原样保留，不能误删正文。
+     */
+    private static String stripHeadingPrefix(String text, String heading) {
+        if (heading.isEmpty() || text.isEmpty() || !text.startsWith(heading)) {
+            return text;
+        }
+        String rest = text.substring(heading.length());
+        return rest.startsWith("\n") ? rest.substring(1).strip() : text;
     }
 
     private static String metaOf(Document document, String key) {
