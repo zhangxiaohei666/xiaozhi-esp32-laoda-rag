@@ -6,7 +6,6 @@ import {
   UserOutlined,
   IdcardOutlined,
   MailOutlined,
-  PhoneOutlined,
   SafetyCertificateOutlined,
   LockOutlined,
   LoadingOutlined,
@@ -28,7 +27,6 @@ const {
   passwordRules,
   nameRules,
   emailRules,
-  telRules,
   verificationCodeRules,
   confirmPasswordRules,
 } = useFormValidation()
@@ -41,7 +39,6 @@ const formData = reactive({
   name: '',
   username: '',
   email: '',
-  tel: '',
   password: '',
   confirmPassword: '',
   verifyCode: '',
@@ -52,7 +49,6 @@ const rules = {
   name: nameRules,
   username: usernameRules,
   email: emailRules,
-  tel: telRules,
   password: passwordRules,
   confirmPassword: confirmPasswordRules(toRef(formData, 'password')),
   verifyCode: verificationCodeRules,
@@ -81,7 +77,6 @@ const handleSubmit = async () => {
     name: formData.name,
     username: formData.username,
     email: formData.email,
-    tel: formData.tel,
     password: formData.password,
     confirmPassword: formData.confirmPassword,
     verifyCode: formData.verifyCode,
@@ -164,20 +159,6 @@ const handleSubmit = async () => {
                     <LoadingOutlined v-if="sendCodeLoading" />
                     {{ buttonText }}
                   </button>
-                </template>
-              </a-input>
-            </a-form-item>
-
-            <!-- 电话输入 -->
-            <a-form-item :label="t('user.phone')" name="tel">
-              <a-input
-                v-model:value="formData.tel"
-                :placeholder="t('auth.enterPhoneOptional')"
-                size="large"
-                class="input-field"
-              >
-                <template #prefix>
-                  <PhoneOutlined />
                 </template>
               </a-input>
             </a-form-item>
